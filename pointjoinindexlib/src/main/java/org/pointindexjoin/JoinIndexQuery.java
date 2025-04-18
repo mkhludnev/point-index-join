@@ -1,13 +1,16 @@
 package org.pointindexjoin;
 
+import org.apache.lucene.document.Document;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
@@ -16,8 +19,10 @@ import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
+import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
@@ -29,22 +34,23 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 public class JoinIndexQuery extends Query {
-    private final Directory pointIndexDir;
     private final IndexSearcher fromSearcher;
     private final Query fromQuery;
     private final String fromField;
     private final String toField;
+    private final SearcherManager indexManager;
+    private final Supplier<IndexWriter> writerFactory;
 
-    public JoinIndexQuery(Directory jonnindexdir, IndexSearcher fromSearcher, Query fromQuery, String fromField, String toField) {
-        this.pointIndexDir = jonnindexdir;
+    public JoinIndexQuery(IndexSearcher fromSearcher, Query fromQuery, String fromField, String toField, SearcherManager indexManager, Supplier<IndexWriter> writerFactory) {
         this.fromSearcher = fromSearcher;
         this.fromQuery = fromQuery;
         this.fromField = fromField;
         this.toField = toField;
-        this.fromField = fromField;
-        this.toField = toField;
+        this.indexManager = indexManager;
+        this.writerFactory = writerFactory;
     }
 
     @Override
@@ -58,98 +64,94 @@ public class JoinIndexQuery extends Query {
             @Override
             public ScorerSupplier scorerSupplier(LeafReaderContext toContext) throws IOException {
                 String toSegmentName = getSegmentName(toContext);
-                DirectoryReader reader = DirectoryReader.open(JoinIndexQuery.this.pointIndexDir);
-                IndexSearcher pointIndexSearcher = new IndexSearcher(reader);
                 FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
-                // TODO approximate via sibling pages
-                for (LeafReaderContext fromLeaf : JoinIndexQuery.this.fromSearcher.getIndexReader().leaves()) {
-                    String fromSegmentName = getSegmentName(fromLeaf);
-                    Weight weight = JoinIndexQuery.this.createWeight(JoinIndexQuery.this.fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
-                    FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());// TODO reuse me across "to" leafs
-                    weight.scorer(fromLeaf).iterator().intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
-                    int lowerFromQ = fromBits.nextSetBit(0);
-                    int upperFromQ = fromBits.prevSetBit(fromBits.length() - 1);
-                    String indexFieldName = fromSegmentName + toSegmentName;
-                    for (LeafReaderContext pointIndexLeaf: pointIndexSearcher.getIndexReader().leaves()){
-                        FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
-                        FieldInfo fieldInfo = fieldInfos.fieldInfo(indexFieldName);
-                        // it's gonna be 2D int point
-                        if(fieldInfo.getPointDimensionCount()>0) {
-                            PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
-                            // absent field throws exception
-                            indexPoints.intersect(new PointValues.IntersectVisitor() {
-                                @Override
-                                public void visit(int docID) throws IOException {
-                                }
-
-                                @Override
-                                public void visit(int docID, byte[] packedValue) throws IOException {
-                                    int fromIdx = NumericUtils.sortableBytesToInt(packedValue, 0);
-                                    int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
-                                    if (fromBits.get(fromIdx)) {
-                                        toBits.set(toIdx);
+                IndexSearcher pointIndexSearcher = JoinIndexQuery.this.indexManager.acquire();
+                try {
+                    // TODO approximate via sibling pages
+                    for (LeafReaderContext fromLeaf : JoinIndexQuery.this.fromSearcher.getIndexReader().leaves()) {
+                        String fromSegmentName = getSegmentName(fromLeaf);
+                        Weight weight = JoinIndexQuery.this.fromQuery.createWeight(JoinIndexQuery.this.fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
+                        FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());// TODO reuse me across "to" leafs
+                        DocIdSetIterator iterator = weight.scorer(fromLeaf).iterator();
+                        iterator.nextDoc();//TODO check
+                        iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
+                        int lowerFromQ = fromBits.nextSetBit(0);
+                        int upperFromQ = fromBits.prevSetBit(fromBits.length() - 1);
+                        String indexFieldName = fromSegmentName + toSegmentName;
+                        for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
+                            FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
+                            FieldInfo fieldInfo = fieldInfos.fieldInfo(indexFieldName);
+                            // it's gonna be 2D int point
+                            if (fieldInfo.getPointDimensionCount() > 0) {
+                                PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
+                                // absent field throws exception
+                                indexPoints.intersect(new PointValues.IntersectVisitor() {
+                                    @Override
+                                    public void visit(int docID) throws IOException {
                                     }
-                                }
 
-                                @Override
-                                public PointValues.Relation compare(byte[] minPackedValue, byte[] maxPackedValue) {
-                                    int lowerFromIdx = NumericUtils.sortableBytesToInt(minPackedValue, 0);
-                                    int upperFromIdx = NumericUtils.sortableBytesToInt(maxPackedValue, 0);
-                                    if (upperFromQ < lowerFromIdx || upperFromIdx < lowerFromQ) {
-                                        return PointValues.Relation.CELL_OUTSIDE_QUERY;
-                                    } else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQ) {
-                                        return PointValues.Relation.CELL_INSIDE_QUERY;
+                                    @Override
+                                    public void visit(int docID, byte[] packedValue) throws IOException {
+                                        int fromIdx = NumericUtils.sortableBytesToInt(packedValue, 0);
+                                        int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
+                                        if (fromBits.get(fromIdx)) {
+                                            toBits.set(toIdx);
+                                        }
                                     }
-                                    return PointValues.Relation.CELL_CROSSES_QUERY;
-                                }
-                            });
-                        }
-                    } // hell, no index segment found. Write it and reopen.
-                    SortedSetDocValues fromDV = fromLeaf.reader().getSortedSetDocValues(JoinIndexQuery.this.fromField);
-                    SortedSetDocValues toDV = toContext.reader().getSortedSetDocValues(JoinIndexQuery.this.toField);
-                    int[] fromOrdByToOrd = innerJoinTerms(fromDV, toDV);
-                    // hash join
-                    // intersect terms
-                    Map<Integer, List<Integer>> toDocsByFromOrd = hashDV(fromOrdByToOrd, toDV);
-                    BiConsumer<Integer, Integer> indexFromToTuple = (f, t) -> {
-                        new IntPoint(indexFieldName, f,t);
-                    };
-                    BiConsumer<Integer, Integer> alongSideJoin = (f, t) -> {
-                        if(fromBits.get(f)) {
-                            toBits.set(t);
-                        }
-                    };
-                    loopFrom(toDocsByFromOrd,fromDV, indexFromToTuple.andThen(alongSideJoin));
+
+                                    @Override
+                                    public PointValues.Relation compare(byte[] minPackedValue, byte[] maxPackedValue) {
+                                        int lowerFromIdx = NumericUtils.sortableBytesToInt(minPackedValue, 0);
+                                        int upperFromIdx = NumericUtils.sortableBytesToInt(maxPackedValue, 0);
+                                        if (upperFromQ < lowerFromIdx || upperFromIdx < lowerFromQ) {
+                                            return PointValues.Relation.CELL_OUTSIDE_QUERY;
+                                        } else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQ) {
+                                            return PointValues.Relation.CELL_INSIDE_QUERY;
+                                        }
+                                        return PointValues.Relation.CELL_CROSSES_QUERY;
+                                    }
+                                });
+                            }
+                        } // hell, no index segment found. Write it and reopen.
+                        SortedSetDocValues fromDV = fromLeaf.reader().getSortedSetDocValues(JoinIndexQuery.this.fromField);
+                        SortedSetDocValues toDV = toContext.reader().getSortedSetDocValues(JoinIndexQuery.this.toField);
+                        int[] fromOrdByToOrd = innerJoinTerms(fromDV, toDV);
+
+
+                        Map<Integer, List<Integer>> toDocsByFromOrd = hashDV(fromOrdByToOrd, toDV);
+
+                        IndexWriter indexWriter = writerFactory.get();
+                        Document pointIdxDoc = new Document();
+                        BiConsumer<Integer, Integer> indexFromToTuple = (f, t) -> {
+                            pointIdxDoc.add(
+                                    new IntPoint(indexFieldName, f, t));
+                        };
+                        BiConsumer<Integer, Integer> alongSideJoin = (f, t) -> {
+                            if (fromBits.get(f)) {
+                                toBits.set(t);
+                            }
+                        };
+                        loopFrom(toDocsByFromOrd, fromDV, indexFromToTuple.andThen(alongSideJoin));
+                        if (pointIdxDoc.iterator().hasNext()) {
+                            indexWriter.addDocument(pointIdxDoc);//TODO check size
+                            indexWriter.close();
+                            indexManager.maybeRefreshBlocking();
+                        } // empty thombstone???
+                    }
+                }finally {
+                    JoinIndexQuery.this.indexManager.release(pointIndexSearcher);
+                    pointIndexSearcher=null;
                 }
+
                 return new ScorerSupplier() {
                     @Override
                     public Scorer get(long leadCost) throws IOException {
-                        return new Scorer() {
-                            @Override
-                            public int docID() {
-                                return 0;
-                            }
-
-                            @Override
-                            public DocIdSetIterator iterator() {
-                                return null;
-                            }
-
-                            @Override
-                            public float getMaxScore(int upTo) throws IOException {
-                                return 0;
-                            }
-
-                            @Override
-                            public float score() throws IOException {
-                                return 0;
-                            }
-                        };
+                        return new ConstantScoreScorer(1f, scoreMode, new BitSetIterator(toBits, toBits.cardinality()));
                     }
 
                     @Override
                     public long cost() {
-                        return 0;
+                        return toBits.cardinality();
                     }
                 };
             }
@@ -166,7 +168,7 @@ public class JoinIndexQuery extends Query {
         while ((fromDoc = fromDV.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
             long vals = fromDV.getValueCount();
             for (int v = 0; v < vals; v++) {
-                long fromOrd = fromDV.nextOrd();
+                int fromOrd = (int) fromDV.nextOrd();
                 List<Integer> toDocs = toDocsByFromOrd.get(fromOrd);
                 if (toDocs!=null) {
                     for (Integer toDoc:toDocs) {
