@@ -22,6 +22,19 @@ import java.io.IOException;
 import java.util.function.Supplier;
 
 public class TestBasicPointIndexJoin extends LuceneTestCase {
+    private static void indexParent(String id, RandomIndexWriter w) throws IOException {
+        Document parent1 = new Document();
+        parent1.add(new SortedSetDocValuesField("id", new BytesRef(id)));
+        w.addDocument(parent1);
+    }
+
+    private static void indexChild(RandomIndexWriter fromw, String fk, String id) throws IOException {
+        Document child1 = new Document();
+        child1.add(new SortedSetDocValuesField("fk", new BytesRef(fk)));
+        child1.add(new StringField("id", id, Field.Store.YES));
+        fromw.addDocument(child1);
+    }
+
     public void testBasic() throws IOException {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
@@ -37,41 +50,18 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                         fromDir,
                         newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
 
-        {
-            Document child1 = new Document();
-            child1.add(new SortedSetDocValuesField("fk",new BytesRef("1")));
-            child1.add(new StringField("id","11", Field.Store.YES));
-            fromw.addDocument(child1);
-            child1 = new Document();
-            child1.add(new SortedSetDocValuesField("fk",new BytesRef("1")));
-            child1.add(new StringField("id","12", Field.Store.YES));
-            fromw.addDocument(child1);
-        }
-        {
-            Document child2 = new Document();
-            child2.add(new SortedSetDocValuesField("fk", new BytesRef("2")));
-            child2.add(new StringField("id", "21", Field.Store.YES));
-            fromw.addDocument(child2);
-            child2 = new Document();
-            child2.add(new SortedSetDocValuesField("fk", new BytesRef("2")));
-            child2.add(new StringField("id", "22", Field.Store.YES));
-            fromw.addDocument(child2);
-        }
-        {
-            Document parent1= new Document();
-            parent1.add(new SortedSetDocValuesField("id", new BytesRef("1")));
-            w.addDocument(parent1);
-        }
-        {
-            Document parent2= new Document();
-            parent2.add(new SortedSetDocValuesField("id", new BytesRef("2")));
-            w.addDocument(parent2);
-        }
+        indexParent("1", w);
+        indexChild(fromw, "1", "11");
+        indexChild(fromw, "1", "12");
+
+        indexParent("2", w);
+        indexChild(fromw, "2", "21");
+        indexChild(fromw, "2", "22");
+
         w.commit();
         fromw.commit();
 
-
-        IndexSearcher indexSearcher = new IndexSearcher(w.getReader());
+        IndexSearcher toSearcher = new IndexSearcher(w.getReader());
         IndexSearcher fromSearcher = new IndexSearcher(fromw.getReader());
 
         w.close();
@@ -88,21 +78,28 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                 throw new RuntimeException(e);
             }
         };
+        SearcherManager indexManager = new SearcherManager(joinindexdir, null);
         {
             Query join = new JoinIndexQuery(fromSearcher, new TermQuery(new Term("id", "22")),
-                    "fk", "id", new SearcherManager(joinindexdir, null),
+                    "fk", "id", indexManager,
                     indexWriterSupplier);
-            TopDocs search = indexSearcher.search(join, indexSearcher.getIndexReader().maxDoc());
+            TopDocs search = toSearcher.search(join, toSearcher.getIndexReader().maxDoc());
             assertEquals(1L, search.totalHits.value());
             assertEquals(1, search.scoreDocs[0].doc);
         }
         {
             Query join = new JoinIndexQuery(fromSearcher, new TermQuery(new Term("id", "12")),
-                    "fk", "id", new SearcherManager(joinindexdir, null),
+                    "fk", "id", indexManager,
                     indexWriterSupplier);
-            TopDocs search = indexSearcher.search(join, indexSearcher.getIndexReader().maxDoc());
+            TopDocs search = toSearcher.search(join, toSearcher.getIndexReader().maxDoc());
             assertEquals(1L, search.totalHits.value());
             assertEquals(0, search.scoreDocs[0].doc);
         }
+        indexManager.close();
+        toSearcher.getIndexReader().close();
+        fromSearcher.getIndexReader().close();
+        dir.close();
+        fromDir.close();
+        joinindexdir.close();
     }
 }
