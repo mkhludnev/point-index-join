@@ -22,6 +22,7 @@ import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.Constants;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
+import java.util.logging.Logger;
 
 public class JoinIndexQuery extends Query {
     public static final int EMPTY_JOIN_1D = 0;
@@ -55,7 +57,7 @@ public class JoinIndexQuery extends Query {
     private static void loopFrom(Map<Integer, List<Integer>> toDocsByFromOrd, SortedSetDocValues fromDV, BiConsumer<Integer, Integer> sink) throws IOException {
         int fromDoc;
         while ((fromDoc = fromDV.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
-            long vals = fromDV.getValueCount();
+            long vals = fromDV.docValueCount();
             for (int v = 0; v < vals; v++) {
                 int fromOrd = (int) fromDV.nextOrd();
                 List<Integer> toDocs = toDocsByFromOrd.get(fromOrd);
@@ -75,7 +77,7 @@ public class JoinIndexQuery extends Query {
         Map<Integer, List<Integer>> toDocByFromOrd = new HashMap<>();
         int toDoc;
         while ((toDoc = toDV.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
-            long vals = toDV.getValueCount();
+            int vals = toDV.docValueCount();
             for (int v = 0; v < vals; v++) {
                 long toOrd = toDV.nextOrd();
                 int fromOrd = fromOrdByToOrd[(int) toOrd];
@@ -180,6 +182,7 @@ public class JoinIndexQuery extends Query {
         }
         indexWriter.close();
         indexManager.maybeRefreshBlocking();
+        Logger.getLogger(JoinIndexQuery.class.getName()).info(()->"written:"+indexFieldName);
     }
 
     @Override
@@ -208,7 +211,7 @@ public class JoinIndexQuery extends Query {
         private final int upperFromQdocNum;
         private final int lowerFromQ;
 
-        public InnerJoinVisitor(FixedBitSet fromBits, FixedBitSet toBits, int upperFromQdocNum, int lowerFromQ) {
+        public InnerJoinVisitor(FixedBitSet fromBits, FixedBitSet toBits, int lowerFromQ, int upperFromQdocNum) {
             this.fromBits = fromBits;
             this.toBits = toBits;
             this.upperFromQdocNum = upperFromQdocNum;
@@ -253,11 +256,13 @@ public class JoinIndexQuery extends Query {
             this.bits = fromBits;
             this.lowerDocId = fromBits.nextSetBit(0);
             this.upperDocId = fromBits.prevSetBit(fromBits.length() - 1);
+            assert this.lowerDocId <=this.upperDocId;
         }
     }
 
     private List<FromContextCache> cacheFromQuery() throws IOException {
-        Weight fromQueryWeight = fromQuery.createWeight(fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
+        Query rewritten = fromQuery.rewrite(fromSearcher);
+        Weight fromQueryWeight = rewritten.createWeight(fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
         List<FromContextCache> fromContextCaches = new ArrayList<>(fromSearcher.getIndexReader().leaves().size());
 
         for(LeafReaderContext fromLeaf : fromSearcher.getIndexReader().leaves()) {
@@ -272,7 +277,6 @@ public class JoinIndexQuery extends Query {
                 }
             }
         }
-
         return fromContextCaches;
     }
 
@@ -306,18 +310,23 @@ public class JoinIndexQuery extends Query {
                 for (FromContextCache fromLeaf : fromLeaves) {
                     String fromSegmentName = getSegmentName(fromLeaf.lrc);
                     String indexFieldName = getPointIndexFieldName(fromSegmentName, toSegmentName);
+                    Logger.getLogger(JoinIndexQuery.class.getName()).info(()->"looking for :"+indexFieldName);
                     for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
                         FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
                         FieldInfo fieldInfo = fieldInfos.fieldInfo(indexFieldName);
-                        if (fieldInfo.getPointDimensionCount()==1) {
-                            // this index segment has no intersects
-                            continue nextFromLeaf;
-                        }
-                        // it's gonna be 2D int point
-                        if (fieldInfo.getPointDimensionCount()==2) { // we have 2d index
-                            PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
-                            // absent field throws exception
-                            indexPoints.intersect(new InnerJoinVisitor(fromLeaf.bits, toBits, fromLeaf.lowerDocId, fromLeaf.upperDocId));
+                        if (fieldInfo!=null) {
+                            if (fieldInfo.getPointDimensionCount() == 1) {
+                                // this index segment has no intersects
+                                continue nextFromLeaf;
+                            }
+                            // it's gonna be 2D int point
+                            if (fieldInfo.getPointDimensionCount() == 2) { // we have 2d index
+                                PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
+                                // absent field throws exception
+                                indexPoints.intersect(new InnerJoinVisitor(fromLeaf.bits, toBits, fromLeaf.lowerDocId, fromLeaf.upperDocId));
+                                Logger.getLogger(JoinIndexQuery.class.getName()).info(()->"found for :" + indexFieldName);
+                                continue nextFromLeaf;
+                            }
                         }
                     } // hell, no index segment found. Write it and reopen.
                     indexJoinSegments(fromLeaf, indexFieldName, toContext, toBits);

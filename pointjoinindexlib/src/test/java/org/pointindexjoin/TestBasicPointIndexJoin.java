@@ -4,31 +4,38 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
-import org.apache.lucene.index.Term;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
-import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TermInSetQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.tests.analysis.MockAnalyzer;
-import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 public class TestBasicPointIndexJoin extends LuceneTestCase {
-    private static void indexParent(String id, RandomIndexWriter w) throws IOException {
+    private static void indexParent(String id, IndexWriter w) throws IOException {
         Document parent1 = new Document();
         parent1.add(new SortedSetDocValuesField("id", new BytesRef(id)));
+        parent1.add(new StringField("id", id, Field.Store.YES));
         w.addDocument(parent1);
     }
 
-    private static void indexChild(RandomIndexWriter fromw, String fk, String id) throws IOException {
+    private static void indexChild(IndexWriter fromw, String fk, String id) throws IOException {
         Document child1 = new Document();
         child1.add(new SortedSetDocValuesField("fk", new BytesRef(fk)));
         child1.add(new StringField("id", id, Field.Store.YES));
@@ -39,33 +46,50 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
 
-        RandomIndexWriter w =
-                new RandomIndexWriter(
-                        random(),
-                        dir,
-                        newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
-        RandomIndexWriter fromw =
-                new RandomIndexWriter(
-                        random(),
-                        fromDir,
-                        newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
+//        RandomIndexWriter w =
+//                new RandomIndexWriter(
+//                        random(),
+//                        dir,
+//                        newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
+//        RandomIndexWriter fromw =
+//                new RandomIndexWriter(
+//                        random(),
+//                        fromDir,
+//                        newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
+        IndexWriter w = new IndexWriter(dir, new IndexWriterConfig());
+        IndexWriter fromw = new IndexWriter(fromDir, new IndexWriterConfig());
 
-        indexParent("1", w);
-        indexChild(fromw, "1", "11");
-        indexChild(fromw, "1", "12");
+//        indexParent("1", w);
+//        indexChild(fromw, "1", "11");
+//        indexChild(fromw, "1", "12");
+//
+//        indexParent("2", w);
+//        indexChild(fromw, "2", "21");
+//        indexChild(fromw, "2", "22");
 
-        indexParent("2", w);
-        indexChild(fromw, "2", "21");
-        indexChild(fromw, "2", "22");
+        // Map to track child ID to parent ID
+        Map<String, String> childToParentMap = new HashMap<>();
+
+        for (int parentId = 1; parentId <= 1000; parentId++) {
+            String parentIdStr = String.valueOf(parentId);
+            indexParent(parentIdStr, w);
+
+            for (int childNum = 1; childNum <= 10; childNum++) {
+                String childId = parentIdStr + "_" + childNum; // Unique child ID
+                indexChild(fromw, parentIdStr, childId);
+                childToParentMap.put(childId, parentIdStr);
+            }
+        }
 
         w.commit();
         fromw.commit();
 
-        IndexSearcher toSearcher = new IndexSearcher(w.getReader());
-        IndexSearcher fromSearcher = new IndexSearcher(fromw.getReader());
-
         w.close();
         fromw.close();
+
+        IndexSearcher toSearcher = new IndexSearcher(DirectoryReader.open(dir));
+        IndexSearcher fromSearcher = new IndexSearcher(DirectoryReader.open(fromDir));
+
 
         Directory joinindexdir = newDirectory();
         IndexWriter idxW = new IndexWriter(joinindexdir, new IndexWriterConfig());
@@ -79,22 +103,28 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             }
         };
         SearcherManager indexManager = new SearcherManager(joinindexdir, null);
-        {
-            Query join = new JoinIndexQuery(fromSearcher, new TermQuery(new Term("id", "22")),
-                    "fk", "id", indexManager,
-                    indexWriterSupplier);
-            TopDocs search = toSearcher.search(join, toSearcher.getIndexReader().maxDoc());
-            assertEquals(1L, search.totalHits.value());
-            assertEquals(1, search.scoreDocs[0].doc);
+
+        for (int pass = 0; pass < 10; pass++) {
+            List<String> childIds = new ArrayList<>(childToParentMap.keySet());
+            Collections.shuffle(childIds, random());
+            List<String> selectedChildIds = childIds.subList(0, 10);
+            Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).collect(Collectors.toSet());
+            {
+                Query join = new JoinIndexQuery(fromSearcher,
+                        new TermInSetQuery("id", selectedChildIds.stream().map(BytesRef::new).toList()),
+                        "fk", "id", indexManager,
+                        indexWriterSupplier);
+                TopDocs search = toSearcher.search(join, selectedChildIds.size());
+                assertEquals(parentsExpected.size(), search.totalHits.value());
+
+                for (ScoreDoc doc : search.scoreDocs) {
+                    Document document = toSearcher.storedFields().document(doc.doc);
+                    assertTrue(document.get("id"), parentsExpected.remove(document.get("id")));
+                }
+                assertTrue(parentsExpected.isEmpty());
+            }
         }
-        {
-            Query join = new JoinIndexQuery(fromSearcher, new TermQuery(new Term("id", "12")),
-                    "fk", "id", indexManager,
-                    indexWriterSupplier);
-            TopDocs search = toSearcher.search(join, toSearcher.getIndexReader().maxDoc());
-            assertEquals(1L, search.totalHits.value());
-            assertEquals(0, search.scoreDocs[0].doc);
-        }
+
         indexManager.close();
         toSearcher.getIndexReader().close();
         fromSearcher.getIndexReader().close();
