@@ -1,5 +1,6 @@
 package org.pointindexjoin;
 
+import com.carrotsearch.randomizedtesting.annotations.Seed;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.SortedSetDocValuesField;
@@ -19,6 +20,7 @@ import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -27,6 +29,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+@Seed("B6A8F34686CD5FE4")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
         Document parent1 = new Document();
@@ -42,6 +45,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         fromw.addDocument(child1);
     }
 
+    @Seed("1D52EE535911D9CA")
     public void testBasic() throws IOException {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
@@ -74,10 +78,17 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             String parentIdStr = String.valueOf(parentId);
             indexParent(parentIdStr, w);
 
-            for (int childNum = 1; childNum <= 10; childNum++) {
+            if (rarely()) {
+                w.commit();
+            }
+
+            for (int childNum = 1; childNum <= 100; childNum++) {
                 String childId = parentIdStr + "_" + childNum; // Unique child ID
                 indexChild(fromw, parentIdStr, childId);
                 childToParentMap.put(childId, parentIdStr);
+                if (rarely()) {
+                    fromw.commit();
+                }
             }
         }
 
@@ -115,7 +126,17 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                         "fk", "id", indexManager,
                         indexWriterSupplier);
                 TopDocs search = toSearcher.search(join, selectedChildIds.size());
-                assertEquals(parentsExpected.size(), search.totalHits.value());
+                assertEquals(
+                        parentsExpected + " but " +
+                                Arrays.stream(search.scoreDocs, 0, (int) search.totalHits.value())
+                                        .map(sd -> {
+                                            try {
+                                                return toSearcher.storedFields().document(sd.doc).get("id");
+                                            } catch (IOException e) {
+                                                throw new RuntimeException(e);
+                                            }
+                                        }).collect(Collectors.joining(","))
+                        , parentsExpected.size(), search.totalHits.value());
 
                 for (ScoreDoc doc : search.scoreDocs) {
                     Document document = toSearcher.storedFields().document(doc.doc);

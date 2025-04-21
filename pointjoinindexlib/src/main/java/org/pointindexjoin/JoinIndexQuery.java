@@ -22,7 +22,6 @@ import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.Constants;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
@@ -145,13 +144,13 @@ public class JoinIndexQuery extends Query {
         return ((SegmentReader) context.reader()).getSegmentName();
     }
 
+    private static String getPointIndexFieldName(String fromSegmentName, String toSegmentName) {
+        return fromSegmentName + "\u22ca" + toSegmentName;
+    }
+
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
         return new JoinIndexWeight(scoreMode);
-    }
-
-    private static String getPointIndexFieldName(String fromSegmentName, String toSegmentName) {
-        return fromSegmentName +"\u22ca"+ toSegmentName;
     }
 
     private void indexJoinSegments(FromContextCache fromLeaf, String indexFieldName, LeafReaderContext toContext, FixedBitSet toBits) throws IOException {
@@ -168,7 +167,7 @@ public class JoinIndexQuery extends Query {
                     new IntPoint(indexFieldName, f, t));
         };
         BiConsumer<Integer, Integer> alongSideJoin = (f, t) -> {
-            if (f>=fromLeaf.lowerDocId && f<=fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
+            if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
                 toBits.set(t);
             }
         };
@@ -182,7 +181,7 @@ public class JoinIndexQuery extends Query {
         }
         indexWriter.close();
         indexManager.maybeRefreshBlocking();
-        Logger.getLogger(JoinIndexQuery.class.getName()).info(()->"written:"+indexFieldName);
+        Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
     @Override
@@ -205,6 +204,26 @@ public class JoinIndexQuery extends Query {
         return 0;
     }
 
+    private List<FromContextCache> cacheFromQuery() throws IOException {
+        Query rewritten = fromQuery.rewrite(fromSearcher);
+        Weight fromQueryWeight = rewritten.createWeight(fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
+        List<FromContextCache> fromContextCaches = new ArrayList<>(fromSearcher.getIndexReader().leaves().size());
+
+        for (LeafReaderContext fromLeaf : fromSearcher.getIndexReader().leaves()) {
+            Scorer fromScorer = fromQueryWeight.scorer(fromLeaf);
+            if (fromScorer != null) {
+                DocIdSetIterator iterator = fromScorer.iterator();
+                if (iterator.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+                    FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());
+                    // TODO may it be already cached in anywhere?
+                    iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
+                    fromContextCaches.add(new FromContextCache(fromLeaf, fromBits));
+                }
+            }
+        }
+        return fromContextCaches;
+    }
+
     private static class InnerJoinVisitor implements PointValues.IntersectVisitor {
         private final FixedBitSet fromBits;
         private final FixedBitSet toBits;
@@ -220,6 +239,7 @@ public class JoinIndexQuery extends Query {
 
         @Override
         public void visit(int docID) throws IOException {
+            throw new UnsupportedOperationException("eager for points");
         }
 
         @Override
@@ -238,7 +258,7 @@ public class JoinIndexQuery extends Query {
             if (upperFromQdocNum < lowerFromIdx || upperFromIdx < lowerFromQ) {
                 return PointValues.Relation.CELL_OUTSIDE_QUERY;
             } else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
-                return PointValues.Relation.CELL_INSIDE_QUERY;
+                return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the points
             }
             return PointValues.Relation.CELL_CROSSES_QUERY;
         }
@@ -256,28 +276,8 @@ public class JoinIndexQuery extends Query {
             this.bits = fromBits;
             this.lowerDocId = fromBits.nextSetBit(0);
             this.upperDocId = fromBits.prevSetBit(fromBits.length() - 1);
-            assert this.lowerDocId <=this.upperDocId;
+            assert this.lowerDocId <= this.upperDocId;
         }
-    }
-
-    private List<FromContextCache> cacheFromQuery() throws IOException {
-        Query rewritten = fromQuery.rewrite(fromSearcher);
-        Weight fromQueryWeight = rewritten.createWeight(fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
-        List<FromContextCache> fromContextCaches = new ArrayList<>(fromSearcher.getIndexReader().leaves().size());
-
-        for(LeafReaderContext fromLeaf : fromSearcher.getIndexReader().leaves()) {
-            Scorer fromScorer = fromQueryWeight.scorer(fromLeaf);
-            if (fromScorer!=null) {
-                DocIdSetIterator iterator = fromScorer.iterator();
-                if (iterator.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
-                    FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());
-                    // TODO may it be already cached in anywhere?
-                    iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
-                    fromContextCaches.add(new FromContextCache(fromLeaf, fromBits));
-                }
-            }
-        }
-        return fromContextCaches;
     }
 
     private class JoinIndexWeight extends Weight {
@@ -310,11 +310,11 @@ public class JoinIndexQuery extends Query {
                 for (FromContextCache fromLeaf : fromLeaves) {
                     String fromSegmentName = getSegmentName(fromLeaf.lrc);
                     String indexFieldName = getPointIndexFieldName(fromSegmentName, toSegmentName);
-                    Logger.getLogger(JoinIndexQuery.class.getName()).info(()->"looking for :"+indexFieldName);
+                    Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "looking for :" + indexFieldName);
                     for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
                         FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
                         FieldInfo fieldInfo = fieldInfos.fieldInfo(indexFieldName);
-                        if (fieldInfo!=null) {
+                        if (fieldInfo != null) {
                             if (fieldInfo.getPointDimensionCount() == 1) {
                                 // this index segment has no intersects
                                 continue nextFromLeaf;
@@ -324,7 +324,7 @@ public class JoinIndexQuery extends Query {
                                 PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
                                 // absent field throws exception
                                 indexPoints.intersect(new InnerJoinVisitor(fromLeaf.bits, toBits, fromLeaf.lowerDocId, fromLeaf.upperDocId));
-                                Logger.getLogger(JoinIndexQuery.class.getName()).info(()->"found for :" + indexFieldName);
+                                Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "found for :" + indexFieldName);
                                 continue nextFromLeaf;
                             }
                         }
@@ -335,7 +335,7 @@ public class JoinIndexQuery extends Query {
                 JoinIndexQuery.this.indexManager.release(pointIndexSearcher);
                 pointIndexSearcher = null;
             }
-            if(toBits.scanIsEmpty())
+            if (toBits.scanIsEmpty())
                 return null;
             return new ScorerSupplier() {
                 @Override
