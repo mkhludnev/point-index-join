@@ -101,7 +101,7 @@ public class JoinIndexQuery extends Query {
              fromOrd < fromDV.getValueCount() && toOrd < toDV.getValueCount(); ) {
             if (fromOrd == 0 && toOrd == 0) {//boostrap
                 fromTerm = fromDV.lookupOrd(fromOrd);
-                toTerm = fromDV.lookupOrd(toOrd);
+                toTerm = toDV.lookupOrd(toOrd);
             }
             int cmp = fromTerm.compareTo(toTerm);
 

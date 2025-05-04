@@ -17,6 +17,7 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.JavaLoggingInfoStream;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -27,9 +28,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
-@Seed("B6A8F34686CD5FE4")
+//@Seed("B6A8F34686CD5FE4")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
         Document parent1 = new Document();
@@ -45,31 +47,18 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         fromw.addDocument(child1);
     }
 
-    @Seed("1D52EE535911D9CA")
+  //  @Seed("1D52EE535911D9CA")
     public void testBasic() throws IOException {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
 
-//        RandomIndexWriter w =
-//                new RandomIndexWriter(
-//                        random(),
-//                        dir,
-//                        newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
-//        RandomIndexWriter fromw =
-//                new RandomIndexWriter(
-//                        random(),
-//                        fromDir,
-//                        newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy()));
-        IndexWriter w = new IndexWriter(dir, new IndexWriterConfig());
-        IndexWriter fromw = new IndexWriter(fromDir, new IndexWriterConfig());
-
-//        indexParent("1", w);
-//        indexChild(fromw, "1", "11");
-//        indexChild(fromw, "1", "12");
-//
-//        indexParent("2", w);
-//        indexChild(fromw, "2", "21");
-//        indexChild(fromw, "2", "22");
+        IndexWriter w = new IndexWriter(dir,
+                new IndexWriterConfig()
+        //                .setInfoStream(new JavaLoggingInfoStream(Level.INFO))
+        );
+        IndexWriter fromw = new IndexWriter(fromDir,
+                new IndexWriterConfig()//.setInfoStream(new JavaLoggingInfoStream(Level.INFO))
+        );
 
         // Map to track child ID to parent ID
         Map<String, String> childToParentMap = new HashMap<>();
@@ -115,35 +104,14 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         };
         SearcherManager indexManager = new SearcherManager(joinindexdir, null);
 
+        //TopDocs parentResult = toSearcher.search(SortedSetDocValuesField.newSlowExactQuery("id", new BytesRef("639")), 10);
+        //System.out.println(parentResult);
+        //assertJoin(Arrays.asList("635_39"), childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
         for (int pass = 0; pass < 10; pass++) {
             List<String> childIds = new ArrayList<>(childToParentMap.keySet());
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);
-            Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).collect(Collectors.toSet());
-            {
-                Query join = new JoinIndexQuery(fromSearcher,
-                        new TermInSetQuery("id", selectedChildIds.stream().map(BytesRef::new).toList()),
-                        "fk", "id", indexManager,
-                        indexWriterSupplier);
-                TopDocs search = toSearcher.search(join, selectedChildIds.size());
-                assertEquals(
-                        parentsExpected + " but " +
-                                Arrays.stream(search.scoreDocs, 0, (int) search.totalHits.value())
-                                        .map(sd -> {
-                                            try {
-                                                return toSearcher.storedFields().document(sd.doc).get("id");
-                                            } catch (IOException e) {
-                                                throw new RuntimeException(e);
-                                            }
-                                        }).collect(Collectors.joining(","))
-                        , parentsExpected.size(), search.totalHits.value());
-
-                for (ScoreDoc doc : search.scoreDocs) {
-                    Document document = toSearcher.storedFields().document(doc.doc);
-                    assertTrue(document.get("id"), parentsExpected.remove(document.get("id")));
-                }
-                assertTrue(parentsExpected.isEmpty());
-            }
+            assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
         }
 
         indexManager.close();
@@ -152,5 +120,33 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         dir.close();
         fromDir.close();
         joinindexdir.close();
+    }
+
+    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap, IndexSearcher fromSearcher, SearcherManager indexManager, Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws IOException {
+        Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).collect(Collectors.toSet());
+        {
+            Query join = new JoinIndexQuery(fromSearcher,
+                    new TermInSetQuery("id", selectedChildIds.stream().map(BytesRef::new).toList()),
+                    "fk", "id", indexManager,
+                    indexWriterSupplier);
+            TopDocs search = toSearcher.search(join, selectedChildIds.size());
+            assertEquals(
+                    selectedChildIds +" yields "+parentsExpected + " but " +
+                            Arrays.stream(search.scoreDocs, 0, (int) search.totalHits.value())
+                                    .map(sd -> {
+                                        try {
+                                            return toSearcher.storedFields().document(sd.doc).get("id");
+                                        } catch (IOException e) {
+                                            throw new RuntimeException(e);
+                                        }
+                                    }).collect(Collectors.joining(","))
+                    , parentsExpected.size(), search.totalHits.value());
+
+            for (ScoreDoc doc : search.scoreDocs) {
+                Document document = toSearcher.storedFields().document(doc.doc);
+                assertTrue(document.get("id"), parentsExpected.remove(document.get("id")));
+            }
+            assertTrue(parentsExpected.isEmpty());
+        }
     }
 }
