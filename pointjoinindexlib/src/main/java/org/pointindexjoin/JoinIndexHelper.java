@@ -16,6 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.IntBinaryOperator;
 
 public class JoinIndexHelper {
     static final int EMPTY_JOIN_1D = 0;
@@ -23,7 +24,7 @@ public class JoinIndexHelper {
     private JoinIndexHelper() {
     }
 
-    static void loopFrom(SortedSetDocValues fromDV, Map<Integer, List<Integer>> toDocsByFromOrd, BiConsumer<Integer, Integer> sink) throws IOException {
+    static void loopFrom(SortedSetDocValues fromDV, Map<Integer, List<Integer>> toDocsByFromOrd, IntBinaryOperator sink) throws IOException {
         int fromDoc;
         while ((fromDoc = fromDV.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
             long vals = fromDV.docValueCount();
@@ -32,7 +33,7 @@ public class JoinIndexHelper {
                 List<Integer> toDocs = toDocsByFromOrd.get(fromOrd);
                 if (toDocs != null) {
                     for (Integer toDoc : toDocs) {
-                        sink.accept(fromDoc, toDoc);
+                        sink.applyAsInt(fromDoc, toDoc);
                     }
                 }
             }

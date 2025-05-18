@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
 
@@ -68,18 +69,20 @@ public class JoinIndexQuery extends Query {
 
     void indexJoinSegments(SortedSetDocValues fromDV, SortedSetDocValues toDV,
                            String indexFieldName,
-                           BiConsumer<Integer, Integer> alongSideJoin) throws IOException {
+                           IntBinaryOperator alongSideJoin) throws IOException {
 
         int[] fromOrdByToOrd = JoinIndexHelper.innerJoinTerms(fromDV, toDV);
 
         Map<Integer, List<Integer>> toDocsByFromOrd = JoinIndexHelper.hashDV(fromOrdByToOrd, toDV);
 
         Document pointIdxDoc = new Document();
-        BiConsumer<Integer, Integer> indexFromToTuple = (f, t) -> {
+        IntBinaryOperator indexFromToTuple = (f, t) -> {
             pointIdxDoc.add(
                     new IntPoint(indexFieldName, f, t));
+            alongSideJoin.applyAsInt(f,t);
+            return 0;//TODO void
         };
-        JoinIndexHelper.loopFrom(fromDV, toDocsByFromOrd, indexFromToTuple.andThen(alongSideJoin));
+        JoinIndexHelper.loopFrom(fromDV, toDocsByFromOrd, indexFromToTuple);
         IndexWriter indexWriter = writerFactory.get();
         if (pointIdxDoc.iterator().hasNext()) {
             indexWriter.addDocument(pointIdxDoc);

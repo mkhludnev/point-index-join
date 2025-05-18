@@ -17,6 +17,8 @@ import org.apache.lucene.util.FixedBitSet;
 import java.io.IOException;
 import java.util.List;
 import java.util.function.BiConsumer;
+import java.util.function.IntBinaryOperator;
+import java.util.function.IntConsumer;
 import java.util.logging.Logger;
 
 class JoinIndexWeight extends Weight {
@@ -37,6 +39,11 @@ class JoinIndexWeight extends Weight {
         return null;
     }
 
+    interface IndexConsumer {
+        void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues idx) throws IOException;
+        IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx);
+    }
+
     @Override
     public ScorerSupplier scorerSupplier(LeafReaderContext toContext) throws IOException {
         if (fromLeaves.isEmpty()) {
@@ -44,6 +51,40 @@ class JoinIndexWeight extends Weight {
         }
         String toSegmentName = JoinIndexHelper.getSegmentName(toContext);
         FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
+
+        IndexConsumer joinConsumer = new IndexConsumer() {
+            @Override
+            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
+                indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
+                        fromCtx.lowerDocId, fromCtx.upperDocId));
+            }
+
+            @Override
+            public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
+                return (f, t) -> {
+                    if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
+                        toBits.set(t);
+                    }
+                    return 0;
+                };
+            }
+        };
+        walkFromContexts(toContext, toSegmentName, joinConsumer);
+        if (toBits.scanIsEmpty())
+            return null;
+        return new ScorerSupplier() {
+            @Override
+            public Scorer get(long leadCost) throws IOException {
+                return new ConstantScoreScorer(1f, scoreMode, new BitSetIterator(toBits, toBits.cardinality()));
+            }
+            @Override
+            public long cost() {
+                return toBits.cardinality();
+            }
+        };
+    }
+
+    private void walkFromContexts(LeafReaderContext toContext, String toSegmentName, IndexConsumer joinConsumer) throws IOException {
         IndexSearcher pointIndexSearcher = joinIndexQuery.indexManager.acquire();
         try {
             // TODO approximate via sibling pages
@@ -64,40 +105,30 @@ class JoinIndexWeight extends Weight {
                         if (fieldInfo.getPointDimensionCount() == 2) { // we have 2d index
                             PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
                             // absent field throws exception
-                            indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromLeaf.bits, toBits, fromLeaf.lowerDocId, fromLeaf.upperDocId));
+                            joinConsumer.onIndexPage(fromLeaf, indexPoints);
+//                            indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromLeaf.bits, toBits,
+//                                    fromLeaf.lowerDocId, fromLeaf.upperDocId));
                             Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "found for :" + indexFieldName);
                             continue nextFromLeaf;
                         }
                     }
                 } // hell, no index segment found. Write it and reopen.
-                BiConsumer<Integer, Integer> fromToDocNumsSink = (f, t) -> {
-                    if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
-                        toBits.set(t);
-                    }
-                };
+//                IntBinaryOperator fromToDocNumsSink = (f, t) -> {
+//                    if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
+//                        toBits.set(t);
+//                    }
+//                    return 0;
+//                };
                 joinIndexQuery.indexJoinSegments(
                         fromLeaf.lrc.reader().getSortedSetDocValues(joinIndexQuery.fromField),
                         toContext.reader().getSortedSetDocValues(joinIndexQuery.toField),
                         indexFieldName,
-                        fromToDocNumsSink);
+                        joinConsumer.createTupleConsumer(fromLeaf));
             }
         } finally {
             joinIndexQuery.indexManager.release(pointIndexSearcher);
             pointIndexSearcher = null;
         }
-        if (toBits.scanIsEmpty())
-            return null;
-        return new ScorerSupplier() {
-            @Override
-            public Scorer get(long leadCost) throws IOException {
-                return new ConstantScoreScorer(1f, scoreMode, new BitSetIterator(toBits, toBits.cardinality()));
-            }
-
-            @Override
-            public long cost() {
-                return toBits.cardinality();
-            }
-        };
     }
 
     @Override
