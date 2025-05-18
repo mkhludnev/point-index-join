@@ -1,6 +1,5 @@
 package org.pointindexjoin;
 
-import com.carrotsearch.randomizedtesting.annotations.Seed;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.SortedSetDocValuesField;
@@ -8,30 +7,34 @@ import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.JavaLoggingInfoStream;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
-import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 //@Seed("B6A8F34686CD5FE4")
+@LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
         Document parent1 = new Document();
@@ -47,14 +50,50 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         fromw.addDocument(child1);
     }
 
-  //  @Seed("1D52EE535911D9CA")
+    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap, IndexSearcher fromSearcher, SearcherManager indexManager, Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws IOException {
+        Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).collect(Collectors.toSet());
+        String removeParent = null;
+        if (!parentsExpected.isEmpty() && random().nextBoolean()) {
+            Iterator<String> iterator = parentsExpected.iterator();
+            removeParent = iterator.next();
+            iterator.remove();
+        }
+        Query join = new JoinIndexQuery(fromSearcher,
+                new TermInSetQuery("id", selectedChildIds.stream().map(BytesRef::new).toList()),
+                "fk", "id", indexManager,
+                indexWriterSupplier);
+        if (removeParent != null) {
+            join = new BooleanQuery.Builder().add(join, BooleanClause.Occur.MUST)
+                    .add(new TermQuery(new Term("id", removeParent)), BooleanClause.Occur.MUST_NOT).build();
+        }
+        TopDocs search = toSearcher.search(join, selectedChildIds.size());
+        assertEquals(
+                selectedChildIds + " yields " + parentsExpected + " but " +
+                        Arrays.stream(search.scoreDocs, 0, (int) search.totalHits.value())
+                                .map(sd -> {
+                                    try {
+                                        return toSearcher.storedFields().document(sd.doc).get("id");
+                                    } catch (IOException e) {
+                                        throw new RuntimeException(e);
+                                    }
+                                }).collect(Collectors.joining(","))
+                , parentsExpected.size(), search.totalHits.value());
+
+        for (ScoreDoc doc : search.scoreDocs) {
+            Document document = toSearcher.storedFields().document(doc.doc);
+            assertTrue(document.get("id"), parentsExpected.remove(document.get("id")));
+        }
+        assertTrue(parentsExpected.isEmpty());
+    }
+
+    //  @Seed("1D52EE535911D9CA")
     public void testBasic() throws IOException {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
 
         IndexWriter w = new IndexWriter(dir,
                 new IndexWriterConfig()
-        //                .setInfoStream(new JavaLoggingInfoStream(Level.INFO))
+                //                .setInfoStream(new JavaLoggingInfoStream(Level.INFO))
         );
         IndexWriter fromw = new IndexWriter(fromDir,
                 new IndexWriterConfig()//.setInfoStream(new JavaLoggingInfoStream(Level.INFO))
@@ -120,33 +159,5 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         dir.close();
         fromDir.close();
         joinindexdir.close();
-    }
-
-    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap, IndexSearcher fromSearcher, SearcherManager indexManager, Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws IOException {
-        Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).collect(Collectors.toSet());
-        {
-            Query join = new JoinIndexQuery(fromSearcher,
-                    new TermInSetQuery("id", selectedChildIds.stream().map(BytesRef::new).toList()),
-                    "fk", "id", indexManager,
-                    indexWriterSupplier);
-            TopDocs search = toSearcher.search(join, selectedChildIds.size());
-            assertEquals(
-                    selectedChildIds +" yields "+parentsExpected + " but " +
-                            Arrays.stream(search.scoreDocs, 0, (int) search.totalHits.value())
-                                    .map(sd -> {
-                                        try {
-                                            return toSearcher.storedFields().document(sd.doc).get("id");
-                                        } catch (IOException e) {
-                                            throw new RuntimeException(e);
-                                        }
-                                    }).collect(Collectors.joining(","))
-                    , parentsExpected.size(), search.totalHits.value());
-
-            for (ScoreDoc doc : search.scoreDocs) {
-                Document document = toSearcher.storedFields().document(doc.doc);
-                assertTrue(document.get("id"), parentsExpected.remove(document.get("id")));
-            }
-            assertTrue(parentsExpected.isEmpty());
-        }
     }
 }

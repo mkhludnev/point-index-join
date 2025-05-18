@@ -257,9 +257,9 @@ public class JoinIndexQuery extends Query {
             int upperFromIdx = NumericUtils.sortableBytesToInt(maxPackedValue, 0);
             if (upperFromQdocNum < lowerFromIdx || upperFromIdx < lowerFromQ) {
                 return PointValues.Relation.CELL_OUTSIDE_QUERY;
-            } else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
+            } /*else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
                 return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the points
-            }
+            }*/
             return PointValues.Relation.CELL_CROSSES_QUERY;
         }
     }
