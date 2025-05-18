@@ -9,10 +9,12 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreMode;
@@ -149,6 +151,25 @@ public class JoinIndexQuery extends Query {
     }
 
     @Override
+    public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+        ConstantScoreQuery toRewriteFrom = new ConstantScoreQuery(fromQuery);
+        Query rewrittenFrom = fromSearcher.rewrite(toRewriteFrom);
+        MatchNoDocsQuery matchNoDocsQuery = new MatchNoDocsQuery();
+        if (rewrittenFrom.equals(matchNoDocsQuery)) {
+            return matchNoDocsQuery;
+        }
+        if (rewrittenFrom!=toRewriteFrom) {
+            return new JoinIndexQuery(fromSearcher, rewrittenFrom,fromField,toField,indexManager,writerFactory) {
+                @Override
+                public Query rewrite(IndexSearcher indexSearcher) throws IOException {
+                    return this;
+                }
+            };
+        }
+        return super.rewrite(indexSearcher);
+    }
+
+    @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
         return new JoinIndexWeight(scoreMode);
     }
@@ -205,8 +226,7 @@ public class JoinIndexQuery extends Query {
     }
 
     private List<FromContextCache> cacheFromQuery() throws IOException {
-        Query rewritten = fromQuery.rewrite(fromSearcher);
-        Weight fromQueryWeight = rewritten.createWeight(fromSearcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
+        Weight fromQueryWeight = fromSearcher.createWeight(fromQuery, ScoreMode.COMPLETE_NO_SCORES, 1f);
         List<FromContextCache> fromContextCaches = new ArrayList<>(fromSearcher.getIndexReader().leaves().size());
 
         for (LeafReaderContext fromLeaf : fromSearcher.getIndexReader().leaves()) {
