@@ -1,10 +1,14 @@
 package org.pointindexjoin;
 
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
@@ -17,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.IntBinaryOperator;
+import java.util.function.Supplier;
+import java.util.logging.Logger;
 
 public class JoinIndexHelper {
     static final int EMPTY_JOIN_1D = 0;
@@ -117,6 +123,34 @@ public class JoinIndexHelper {
 
     static String getPointIndexFieldName(String fromSegmentName, String toSegmentName) {
         return fromSegmentName + "\u22ca" + toSegmentName;
+    }
+
+    static void indexJoinSegments(SearcherManager indexManager, Supplier<IndexWriter> writerFactory, SortedSetDocValues fromDV, SortedSetDocValues toDV,
+                                  String indexFieldName,
+                                  IntBinaryOperator alongSideJoin) throws IOException {
+
+        int[] fromOrdByToOrd = innerJoinTerms(fromDV, toDV);
+
+        Map<Integer, List<Integer>> toDocsByFromOrd = hashDV(fromOrdByToOrd, toDV);
+
+        Document pointIdxDoc = new Document();
+        IntBinaryOperator indexFromToTuple = (f, t) -> {
+            pointIdxDoc.add(
+                    new IntPoint(indexFieldName, f, t));
+            alongSideJoin.applyAsInt(f,t);
+            return 0;//TODO void
+        };
+        loopFrom(fromDV, toDocsByFromOrd, indexFromToTuple);
+        IndexWriter indexWriter = writerFactory.get();
+        if (pointIdxDoc.iterator().hasNext()) {
+            indexWriter.addDocument(pointIdxDoc);
+        } else { // empty tombstone
+            pointIdxDoc.add(new IntPoint(indexFieldName, EMPTY_JOIN_1D));
+            indexWriter.addDocument(pointIdxDoc);
+        }
+        indexWriter.close();
+        indexManager.maybeRefreshBlocking();
+        Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
     static class InnerJoinVisitor implements PointValues.IntersectVisitor {

@@ -1,10 +1,7 @@
 package org.pointindexjoin;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
@@ -20,11 +17,7 @@ import org.apache.lucene.util.FixedBitSet;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.function.BiConsumer;
-import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
-import java.util.logging.Logger;
 
 public class JoinIndexQuery extends Query {
     private final IndexSearcher fromSearcher;
@@ -32,7 +25,7 @@ public class JoinIndexQuery extends Query {
     final String fromField;
     final String toField;
     final SearcherManager indexManager;
-    private final Supplier<IndexWriter> writerFactory;
+    final Supplier<IndexWriter> writerFactory;
 
     public JoinIndexQuery(IndexSearcher fromSearcher, Query fromQuery, String fromField, String toField, SearcherManager indexManager, Supplier<IndexWriter> writerFactory) {
         this.fromSearcher = fromSearcher;
@@ -65,34 +58,6 @@ public class JoinIndexQuery extends Query {
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
         return new JoinIndexWeight(this, scoreMode);
-    }
-
-    void indexJoinSegments(SortedSetDocValues fromDV, SortedSetDocValues toDV,
-                           String indexFieldName,
-                           IntBinaryOperator alongSideJoin) throws IOException {
-
-        int[] fromOrdByToOrd = JoinIndexHelper.innerJoinTerms(fromDV, toDV);
-
-        Map<Integer, List<Integer>> toDocsByFromOrd = JoinIndexHelper.hashDV(fromOrdByToOrd, toDV);
-
-        Document pointIdxDoc = new Document();
-        IntBinaryOperator indexFromToTuple = (f, t) -> {
-            pointIdxDoc.add(
-                    new IntPoint(indexFieldName, f, t));
-            alongSideJoin.applyAsInt(f,t);
-            return 0;//TODO void
-        };
-        JoinIndexHelper.loopFrom(fromDV, toDocsByFromOrd, indexFromToTuple);
-        IndexWriter indexWriter = writerFactory.get();
-        if (pointIdxDoc.iterator().hasNext()) {
-            indexWriter.addDocument(pointIdxDoc);
-        } else { // empty tombstone
-            pointIdxDoc.add(new IntPoint(indexFieldName, JoinIndexHelper.EMPTY_JOIN_1D));
-            indexWriter.addDocument(pointIdxDoc);
-        }
-        indexWriter.close();
-        indexManager.maybeRefreshBlocking();
-        Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
     @Override

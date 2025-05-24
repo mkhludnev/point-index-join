@@ -15,11 +15,15 @@ import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.FixedBitSet;
 
 import java.io.IOException;
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.IntBinaryOperator;
-import java.util.function.IntConsumer;
-import java.util.logging.Logger;
 
 class JoinIndexWeight extends Weight {
 
@@ -34,14 +38,44 @@ class JoinIndexWeight extends Weight {
         this.fromLeaves = joinIndexQuery.cacheFromQuery(); // TODO defer it even further
     }
 
+    static void findIndices(IndexSearcher pointIndexSearcher, Set<String> indexFieldNames,
+                            BiConsumer<FieldInfo, PointValues> downstream) throws IOException {
+        for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
+            FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
+            for (FieldInfo fieldInfo : fieldInfos) {
+                if (indexFieldNames.contains(fieldInfo.name)) {
+                    downstream.accept(fieldInfo, (pointIndexLeaf.reader()).getPointValues(fieldInfo.name));
+                }
+            }
+        }
+    }
+
+    static AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> extractIndices(IndexSearcher pointIndexSearcher, Set<String> indexFieldNames) throws IOException {
+        Map<String, PointValues> foundIndices = new LinkedHashMap<>();
+        List<String> empty = new ArrayList<>();
+        findIndices(pointIndexSearcher, indexFieldNames, (f, v) -> {
+            if (indexFieldNames.contains(f.name)) {
+                if (f.getPointDimensionCount() == 2) {
+                    foundIndices.put(f.name, v);
+                } else {
+                    empty.add(f.name);
+                }
+            }
+        });
+        Set<String> absent;
+        if (foundIndices.size() + empty.size() < indexFieldNames.size()) {
+            absent = new LinkedHashSet<>(indexFieldNames);
+            absent.removeAll(empty);
+            absent.removeAll(foundIndices.keySet());
+        } else {
+            absent = Set.of();
+        }
+        return new AbstractMap.SimpleEntry<>(foundIndices, absent);
+    }
+
     @Override
     public Explanation explain(LeafReaderContext context, int doc) throws IOException {
         return null;
-    }
-
-    interface IndexConsumer {
-        void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues idx) throws IOException;
-        IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx);
     }
 
     @Override
@@ -49,10 +83,9 @@ class JoinIndexWeight extends Weight {
         if (fromLeaves.isEmpty()) {
             return null;
         }
-        String toSegmentName = JoinIndexHelper.getSegmentName(toContext);
         FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
 
-        IndexConsumer joinConsumer = new IndexConsumer() {
+        AbstractIndexConsumer joinConsumer = new AbstractIndexConsumer() {
             @Override
             public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
                 indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
@@ -69,7 +102,7 @@ class JoinIndexWeight extends Weight {
                 };
             }
         };
-        walkFromContexts(toContext, toSegmentName, joinConsumer);
+        joinConsumer.walkFromContexts(toContext);
         if (toBits.scanIsEmpty())
             return null;
         return new ScorerSupplier() {
@@ -77,6 +110,7 @@ class JoinIndexWeight extends Weight {
             public Scorer get(long leadCost) throws IOException {
                 return new ConstantScoreScorer(1f, scoreMode, new BitSetIterator(toBits, toBits.cardinality()));
             }
+
             @Override
             public long cost() {
                 return toBits.cardinality();
@@ -84,55 +118,48 @@ class JoinIndexWeight extends Weight {
         };
     }
 
-    private void walkFromContexts(LeafReaderContext toContext, String toSegmentName, IndexConsumer joinConsumer) throws IOException {
-        IndexSearcher pointIndexSearcher = joinIndexQuery.indexManager.acquire();
-        try {
-            // TODO approximate via sibling pages
-            nextFromLeaf:
-            for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
-                String fromSegmentName = JoinIndexHelper.getSegmentName(fromLeaf.lrc);
-                String indexFieldName = JoinIndexHelper.getPointIndexFieldName(fromSegmentName, toSegmentName);
-                Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "looking for :" + indexFieldName);
-                for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
-                    FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
-                    FieldInfo fieldInfo = fieldInfos.fieldInfo(indexFieldName);
-                    if (fieldInfo != null) {
-                        if (fieldInfo.getPointDimensionCount() == 1) {
-                            // this index segment has no intersects
-                            continue nextFromLeaf;
-                        }
-                        // it's gonna be 2D int point
-                        if (fieldInfo.getPointDimensionCount() == 2) { // we have 2d index
-                            PointValues indexPoints = (pointIndexLeaf.reader()).getPointValues(indexFieldName);
-                            // absent field throws exception
-                            joinConsumer.onIndexPage(fromLeaf, indexPoints);
-//                            indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromLeaf.bits, toBits,
-//                                    fromLeaf.lowerDocId, fromLeaf.upperDocId));
-                            Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "found for :" + indexFieldName);
-                            continue nextFromLeaf;
-                        }
-                    }
-                } // hell, no index segment found. Write it and reopen.
-//                IntBinaryOperator fromToDocNumsSink = (f, t) -> {
-//                    if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
-//                        toBits.set(t);
-//                    }
-//                    return 0;
-//                };
-                joinIndexQuery.indexJoinSegments(
-                        fromLeaf.lrc.reader().getSortedSetDocValues(joinIndexQuery.fromField),
-                        toContext.reader().getSortedSetDocValues(joinIndexQuery.toField),
-                        indexFieldName,
-                        joinConsumer.createTupleConsumer(fromLeaf));
-            }
-        } finally {
-            joinIndexQuery.indexManager.release(pointIndexSearcher);
-            pointIndexSearcher = null;
-        }
-    }
-
     @Override
     public boolean isCacheable(LeafReaderContext ctx) {
         return false;
+    }
+
+    interface IndexConsumer {
+        void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues idx) throws IOException;
+
+        IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx);
+    }
+
+    abstract class AbstractIndexConsumer implements IndexConsumer {
+        void walkFromContexts(LeafReaderContext toContext) throws IOException {
+            IndexSearcher pointIndexSearcher = joinIndexQuery.indexManager.acquire();
+            Map<String, JoinIndexHelper.FromContextCache> indexPointsNames = new LinkedHashMap<>(fromLeaves.size());
+            String toSegmentName = JoinIndexHelper.getSegmentName(toContext);
+            try {
+                // TODO approximate via sibling pages
+                //nextFromLeaf:
+                for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
+                    String fromSegmentName = JoinIndexHelper.getSegmentName(fromLeaf.lrc);
+                    String indexFieldName = JoinIndexHelper.getPointIndexFieldName(fromSegmentName, toSegmentName);
+                    indexPointsNames.put(indexFieldName, fromLeaf);
+                }
+                AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent = extractIndices(pointIndexSearcher, indexPointsNames.keySet());
+                for (Map.Entry<String, PointValues> joinIndexByName : indicesAndAbsent.getKey().entrySet()) {
+                    JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
+                    this.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
+                }
+                for (String absentIndexName : indicesAndAbsent.getValue()) {
+                    JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(absentIndexName);
+                    JoinIndexHelper.indexJoinSegments(
+                            joinIndexQuery.indexManager, joinIndexQuery.writerFactory,
+                            fromCtxLeaf.lrc.reader().getSortedSetDocValues(joinIndexQuery.fromField),
+                            toContext.reader().getSortedSetDocValues(joinIndexQuery.toField),
+                            absentIndexName,
+                            this.createTupleConsumer(fromCtxLeaf));
+                }
+            } finally {
+                joinIndexQuery.indexManager.release(pointIndexSearcher);
+                pointIndexSearcher = null;
+            }
+        }
     }
 }
