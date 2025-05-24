@@ -130,11 +130,16 @@ class JoinIndexWeight extends Weight {
     }
 
     abstract class AbstractIndexConsumer implements IndexConsumer {
+
+        private Map<String, JoinIndexHelper.FromContextCache> indexPointsNames;
+        private AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent;
+
         void walkFromContexts(LeafReaderContext toContext) throws IOException {
             IndexSearcher pointIndexSearcher = joinIndexQuery.indexManager.acquire();
-            Map<String, JoinIndexHelper.FromContextCache> indexPointsNames = new LinkedHashMap<>(fromLeaves.size());
+            indexPointsNames = new LinkedHashMap<>(fromLeaves.size());
             String toSegmentName = JoinIndexHelper.getSegmentName(toContext);
             try {
+
                 // TODO approximate via sibling pages
                 //nextFromLeaf:
                 for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
@@ -143,6 +148,7 @@ class JoinIndexWeight extends Weight {
                     indexPointsNames.put(indexFieldName, fromLeaf);
                 }
                 AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent = extractIndices(pointIndexSearcher, indexPointsNames.keySet());
+
                 for (Map.Entry<String, PointValues> joinIndexByName : indicesAndAbsent.getKey().entrySet()) {
                     JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
                     this.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
