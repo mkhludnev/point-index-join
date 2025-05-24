@@ -83,39 +83,18 @@ class JoinIndexWeight extends Weight {
         if (fromLeaves.isEmpty()) {
             return null;
         }
-        FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
-
-        AbstractIndexConsumer joinConsumer = new AbstractIndexConsumer() {
-            @Override
-            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
-                indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
-                        fromCtx.lowerDocId, fromCtx.upperDocId));
+        try(EagerIndexConsumer joinConsumer = new EagerIndexConsumer(toContext)) {
+            joinConsumer.walkFromContexts(toContext);
+            if (!joinConsumer.indicesAndAbsent.getValue().isEmpty()) {
+                joinConsumer.prepareEager();
+                return joinConsumer.createEager();
+            } else {
+                joinConsumer.prepareLazy();
+                return joinConsumer.createLazy();
             }
-
-            @Override
-            public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
-                return (f, t) -> {
-                    if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
-                        toBits.set(t);
-                    }
-                    return 0;
-                };
-            }
-        };
-        joinConsumer.walkFromContexts(toContext);
-        if (toBits.scanIsEmpty())
-            return null;
-        return new ScorerSupplier() {
-            @Override
-            public Scorer get(long leadCost) throws IOException {
-                return new ConstantScoreScorer(1f, scoreMode, new BitSetIterator(toBits, toBits.cardinality()));
-            }
-
-            @Override
-            public long cost() {
-                return toBits.cardinality();
-            }
-        };
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
@@ -129,43 +108,100 @@ class JoinIndexWeight extends Weight {
         IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx);
     }
 
-    abstract class AbstractIndexConsumer implements IndexConsumer {
+    abstract class AbstractIndexConsumer implements IndexConsumer , AutoCloseable{
 
+        private final LeafReaderContext toContext;
         private Map<String, JoinIndexHelper.FromContextCache> indexPointsNames;
-        private AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent;
+        AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent;
+        private IndexSearcher pointIndexSearcher;
+
+        public AbstractIndexConsumer(LeafReaderContext toContext) throws IOException {
+            this.toContext = toContext;
+            pointIndexSearcher = joinIndexQuery.indexManager.acquire();
+        }
 
         void walkFromContexts(LeafReaderContext toContext) throws IOException {
-            IndexSearcher pointIndexSearcher = joinIndexQuery.indexManager.acquire();
             indexPointsNames = new LinkedHashMap<>(fromLeaves.size());
             String toSegmentName = JoinIndexHelper.getSegmentName(toContext);
-            try {
-
-                // TODO approximate via sibling pages
-                //nextFromLeaf:
-                for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
-                    String fromSegmentName = JoinIndexHelper.getSegmentName(fromLeaf.lrc);
-                    String indexFieldName = JoinIndexHelper.getPointIndexFieldName(fromSegmentName, toSegmentName);
-                    indexPointsNames.put(indexFieldName, fromLeaf);
-                }
-                AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent = extractIndices(pointIndexSearcher, indexPointsNames.keySet());
-
-                for (Map.Entry<String, PointValues> joinIndexByName : indicesAndAbsent.getKey().entrySet()) {
-                    JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
-                    this.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
-                }
-                for (String absentIndexName : indicesAndAbsent.getValue()) {
-                    JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(absentIndexName);
-                    JoinIndexHelper.indexJoinSegments(
-                            joinIndexQuery.indexManager, joinIndexQuery.writerFactory,
-                            fromCtxLeaf.lrc.reader().getSortedSetDocValues(joinIndexQuery.fromField),
-                            toContext.reader().getSortedSetDocValues(joinIndexQuery.toField),
-                            absentIndexName,
-                            this.createTupleConsumer(fromCtxLeaf));
-                }
-            } finally {
-                joinIndexQuery.indexManager.release(pointIndexSearcher);
-                pointIndexSearcher = null;
+            // TODO approximate via sibling pages
+            //nextFromLeaf:
+            for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
+                String fromSegmentName = JoinIndexHelper.getSegmentName(fromLeaf.lrc);
+                String indexFieldName = JoinIndexHelper.getPointIndexFieldName(fromSegmentName, toSegmentName);
+                indexPointsNames.put(indexFieldName, fromLeaf);
             }
+            this.indicesAndAbsent = extractIndices(pointIndexSearcher, indexPointsNames.keySet());
+        }
+
+        void prepareEager() throws IOException {
+            for (Map.Entry<String, PointValues> joinIndexByName : indicesAndAbsent.getKey().entrySet()) {
+                JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
+                this.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
+            }
+            for (String absentIndexName : indicesAndAbsent.getValue()) {
+                JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(absentIndexName);
+                JoinIndexHelper.indexJoinSegments(
+                        joinIndexQuery.indexManager, joinIndexQuery.writerFactory,
+                        fromCtxLeaf.lrc.reader().getSortedSetDocValues(joinIndexQuery.fromField),
+                        toContext.reader().getSortedSetDocValues(joinIndexQuery.toField),
+                        absentIndexName,
+                        this.createTupleConsumer(fromCtxLeaf));
+            }
+        }
+
+        @Override
+        public void close() throws Exception {
+            joinIndexQuery.indexManager.release(pointIndexSearcher);
+            pointIndexSearcher = null;
+        }
+    }
+
+    private class EagerIndexConsumer extends AbstractIndexConsumer {
+        private final FixedBitSet toBits;
+
+        public EagerIndexConsumer(LeafReaderContext toContext) throws IOException {
+            super(toContext);
+            toBits = new FixedBitSet(toContext.reader().maxDoc());
+        }
+
+        @Override
+        public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
+            indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
+                    fromCtx.lowerDocId, fromCtx.upperDocId));
+        }
+
+        @Override
+        public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
+            return (f, t) -> {
+                if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
+                    toBits.set(t);
+                }
+                return 0;
+            };
+        }
+
+        public ScorerSupplier createEager() {
+            if(toBits.scanIsEmpty())
+                return null;
+            return new ScorerSupplier() {
+                @Override
+                public Scorer get(long leadCost) throws IOException {
+                    return new ConstantScoreScorer(1f, scoreMode, new BitSetIterator(toBits, toBits.cardinality()));
+                }
+
+                @Override
+                public long cost() {
+                    return toBits.cardinality();
+                }
+            };
+        }
+
+        public void prepareLazy() {
+            throw new UnsupportedOperationException();
+        }
+
+        public ScorerSupplier createLazy() {
+            throw new UnsupportedOperationException();
         }
     }
 }
