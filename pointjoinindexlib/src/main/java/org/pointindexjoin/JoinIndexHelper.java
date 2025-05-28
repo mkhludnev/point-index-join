@@ -2,23 +2,30 @@ package org.pointindexjoin;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
 import java.io.IOException;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
@@ -151,6 +158,41 @@ public class JoinIndexHelper {
         indexWriter.close();
         indexManager.maybeRefreshBlocking();
         Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
+    }
+
+    static void findIndices(IndexSearcher pointIndexSearcher, Set<String> indexFieldNames,
+                            BiConsumer<FieldInfo, PointValues> downstream) throws IOException {
+        for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
+            FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
+            for (FieldInfo fieldInfo : fieldInfos) {
+                if (indexFieldNames.contains(fieldInfo.name)) {
+                    downstream.accept(fieldInfo, (pointIndexLeaf.reader()).getPointValues(fieldInfo.name));
+                }
+            }
+        }
+    }
+
+    static AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> extractIndices(IndexSearcher pointIndexSearcher, Set<String> indexFieldNames) throws IOException {
+        Map<String, PointValues> foundIndices = new LinkedHashMap<>();
+        List<String> empty = new ArrayList<>();
+        findIndices(pointIndexSearcher, indexFieldNames, (f, v) -> {
+            if (indexFieldNames.contains(f.name)) {
+                if (f.getPointDimensionCount() == 2) {
+                    foundIndices.put(f.name, v);
+                } else {
+                    empty.add(f.name);
+                }
+            }
+        });
+        Set<String> absent;
+        if (foundIndices.size() + empty.size() < indexFieldNames.size()) {
+            absent = new LinkedHashSet<>(indexFieldNames);
+            absent.removeAll(empty);
+            absent.removeAll(foundIndices.keySet());
+        } else {
+            absent = Set.of();
+        }
+        return new AbstractMap.SimpleEntry<>(foundIndices, absent);
     }
 
     static class InnerJoinVisitor implements PointValues.IntersectVisitor {
