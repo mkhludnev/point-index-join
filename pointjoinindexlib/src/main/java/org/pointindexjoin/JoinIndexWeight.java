@@ -12,13 +12,12 @@ import java.util.List;
 class JoinIndexWeight extends Weight {
 
     private final JoinIndexQuery joinIndexQuery;
-    private final ScoreMode scoreMode;
     private final List<JoinIndexHelper.FromContextCache> fromLeaves;
 
     public JoinIndexWeight(JoinIndexQuery joinIndexQuery, ScoreMode scoreMode) throws IOException {
         super(joinIndexQuery);
         this.joinIndexQuery = joinIndexQuery;
-        this.scoreMode = scoreMode;
+       // this.scoreMode = scoreMode;
         this.fromLeaves = joinIndexQuery.cacheFromQuery(); // TODO defer it even further
     }
 
