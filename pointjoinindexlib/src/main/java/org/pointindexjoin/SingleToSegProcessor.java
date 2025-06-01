@@ -66,7 +66,7 @@ class SingleToSegProcessor implements AutoCloseable {
         //pointIndexSearcher = null;
     }
 
-    public ScorerSupplier createEager(Supplier<IndexWriter> writerFactory) throws IOException {
+    public SingleToSegSupplier createEager(Supplier<IndexWriter> writerFactory) throws IOException {
         FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
 
         PointIndexConsumer sink = new PointIndexConsumer() {
@@ -106,27 +106,14 @@ class SingleToSegProcessor implements AutoCloseable {
         if (toBits.scanIsEmpty()) {
             return null;
         }
-        return new ScorerSupplier() {
-
-            private final int cardinality = toBits.cardinality();
-
-            @Override
-            public Scorer get(long leadCost) throws IOException {
-                return new ConstantScoreScorer(1f, ScoreMode.COMPLETE_NO_SCORES, new BitSetIterator(toBits, cardinality));
-            }
-
-            @Override
-            public long cost() {
-                return cardinality;
-            }
-        };
+        return new SingleToSegSupplier(toBits);
     }
 
     interface LazyVisitor extends PointValues.IntersectVisitor{
         boolean needsVisitDocValues();
     }
 
-    public ScorerSupplier createLazy() throws IOException {
+    public ScorerSupplier createLazy(SingleToSegSupplier debugBro) throws IOException {
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
         PointIndexConsumer sink = new PointIndexConsumer() {
             @Override
@@ -151,6 +138,7 @@ class SingleToSegProcessor implements AutoCloseable {
         for (String absentIndexName : absent) {
             throw new IllegalArgumentException("" + absent);
         }
+        assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
         if (toApprox.scanIsEmpty()) {
             return null;
         } else {
@@ -160,6 +148,7 @@ class SingleToSegProcessor implements AutoCloseable {
 
                 @Override
                 public Scorer get(long leadCost) throws IOException {
+                    Scorer debugScorer = debugBro.get(leadCost);
                     return new Scorer() {
                         int refinedUpTo = -1;
 
@@ -167,14 +156,22 @@ class SingleToSegProcessor implements AutoCloseable {
                         public TwoPhaseIterator twoPhaseIterator() {
 
                             return new TwoPhaseIterator(approximation) {
+                                DocIdSetIterator debugDisi = debugScorer.iterator();
                                 @Override
                                 public boolean matches() throws IOException {
                                     int docID = approximation().docID();
+                                    int debugDoc = debugDisi.advance(docID);
                                     if (docID>refinedUpTo) {
+                                        assert toApprox.get(docID);
+                                        // 1 phase
+                                        // all ranges crosses docID
+                                        // find min upper
+                                        // 2 phase all ranges docID+1 .. minUpper found
                                         refinedUpTo = refine(toApprox, docID);
                                         assert refinedUpTo != Integer.MAX_VALUE;
                                     }
                                     assert docID<=refinedUpTo;
+                                    assert debugBro.toBits.get(docID)==toApprox.get(docID): "refined["+docID+"]=="+toApprox.get(docID)+" exact=="+debugBro.toBits.get(docID);
                                     return toApprox.get(docID);
                                 }
 
@@ -216,12 +213,14 @@ class SingleToSegProcessor implements AutoCloseable {
     }
 
     private int refine(FixedBitSet toApprox, int toDocID) throws IOException {
-        RefineToApproxVisitor refiner = new RefineToApproxVisitor(toApprox, toDocID);
+        RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
+                toDocID);
         for (Map.Entry<String, PointValues> joinIndexByName : pointIndices.entrySet()) {
             refiner.fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
             joinIndexByName.getValue().intersect(refiner);
         }
         assert refiner.minUpperSeen < Integer.MAX_VALUE;
+        FixedBitSet.andRange(refiner.toRefined,0,toApprox, toDocID, refiner.minUpperSeen-toDocID);
         return refiner.minUpperSeen;
     }
 
@@ -297,14 +296,16 @@ class SingleToSegProcessor implements AutoCloseable {
     }
 
     private static class RefineToApproxVisitor implements PointValues.IntersectVisitor {
+        private FixedBitSet toRefined;
         private JoinIndexHelper.FromContextCache fromCtxLeaf;
-        private final FixedBitSet toApprox;
+        //private final FixedBitSet toApprox;
         private final int toDocID;
         int minUpperSeen;
         private int theLastUpperToIdx;
 
-        public RefineToApproxVisitor(FixedBitSet toApprox, int toDocID) {
-            this.toApprox = toApprox;
+        public RefineToApproxVisitor(//FixedBitSet toApprox,
+                                     int toDocID) {
+            //this.toApprox = toApprox;
             this.toDocID = toDocID;
             minUpperSeen = Integer.MAX_VALUE;
         }
@@ -319,11 +320,13 @@ class SingleToSegProcessor implements AutoCloseable {
             int fromIdx = NumericUtils.sortableBytesToInt(packedValue, 0);
             int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
             minUpperSeen = Math.min(minUpperSeen, theLastUpperToIdx); // sadly it's repeated many times per leaf
+            if(this.toRefined==null) {
+                this.toRefined = new FixedBitSet(minUpperSeen-this.toDocID); // ready to clean this, next leafs might be only be shorter
+            }
             if (toIdx>=this.toDocID) {
                 if (fromCtxLeaf.bits.get(fromIdx)) {
-                    toApprox.set(toIdx);
-                } else {
-                    toApprox.clear(toIdx);
+                    int refineBitShifted = toIdx - this.toDocID;
+                    toRefined.set(refineBitShifted); //no need to ever set it since we refine
                 }
             }
         }
@@ -334,14 +337,38 @@ class SingleToSegProcessor implements AutoCloseable {
             int upperFromIdx = NumericUtils.sortableBytesToInt(maxPackedValue, 0);
 
             int lowerToIdx = NumericUtils.sortableBytesToInt(minPackedValue, Integer.BYTES);
-            theLastUpperToIdx = NumericUtils.sortableBytesToInt(maxPackedValue, Integer.BYTES);
+            int upperToIdx = NumericUtils.sortableBytesToInt(maxPackedValue, Integer.BYTES);
 
             if (fromCtxLeaf.upperDocId < lowerFromIdx || upperFromIdx < fromCtxLeaf.lowerDocId ||
-                    toDocID < lowerToIdx || theLastUpperToIdx < toDocID) {
+                    toDocID < lowerToIdx || upperToIdx < toDocID) {
                 return PointValues.Relation.CELL_OUTSIDE_QUERY;
             } /*else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
-        return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the points
-    }*/     return PointValues.Relation.CELL_CROSSES_QUERY;
+        return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the pointstheLastUpperToIdx
+
+    }*/
+            theLastUpperToIdx = upperToIdx;
+            return PointValues.Relation.CELL_CROSSES_QUERY;
+        }
+    }
+
+    private static class SingleToSegSupplier extends ScorerSupplier {
+
+        private final int cardinality;
+        private final FixedBitSet toBits;
+
+        public SingleToSegSupplier(FixedBitSet toBits) {
+            this.toBits = toBits;
+            cardinality = toBits.cardinality();
+        }
+
+        @Override
+        public Scorer get(long leadCost) throws IOException {
+            return new ConstantScoreScorer(1f, ScoreMode.COMPLETE_NO_SCORES, new BitSetIterator(toBits, cardinality));
+        }
+
+        @Override
+        public long cost() {
+            return cardinality;
         }
     }
 }

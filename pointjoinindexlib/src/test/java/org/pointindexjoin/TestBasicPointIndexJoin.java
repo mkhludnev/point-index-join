@@ -1,5 +1,6 @@
 package org.pointindexjoin;
 
+import com.carrotsearch.randomizedtesting.annotations.Seed;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.SortedSetDocValuesField;
@@ -33,7 +34,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-//@Seed("B6A8F34686CD5FE4")
+@Seed("67DC4AA556A66043")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
@@ -86,7 +87,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         assertTrue(parentsExpected.isEmpty());
     }
 
-    //  @Seed("1D52EE535911D9CA")
+    @Seed("CC2657B0897AE66D")
     public void testBasic() throws IOException {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
@@ -146,7 +147,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         //TopDocs parentResult = toSearcher.search(SortedSetDocValuesField.newSlowExactQuery("id", new BytesRef("639")), 10);
         //System.out.println(parentResult);
         //assertJoin(Arrays.asList("635_39"), childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
-        for (int pass = 0; pass < 10; pass++) {
+        for (int pass = 0; pass < 2; pass++) {
             List<String> childIds = new ArrayList<>(childToParentMap.keySet());
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);

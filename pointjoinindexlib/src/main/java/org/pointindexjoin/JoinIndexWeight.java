@@ -35,7 +35,7 @@ class JoinIndexWeight extends Weight {
             if (!joinConsumer.isFullyIndexed()) {
                 return joinConsumer.createEager(joinIndexQuery.writerFactory);
             } else {
-                return joinConsumer.createLazy();
+                return joinConsumer.createLazy(new SingleToSegProcessor(joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toContext).createEager(joinIndexQuery.writerFactory));
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
