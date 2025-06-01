@@ -150,7 +150,7 @@ class SingleToSegProcessor implements AutoCloseable {
                 public Scorer get(long leadCost) throws IOException {
                     Scorer debugScorer = debugBro.get(leadCost);
                     return new Scorer() {
-                        int refinedUpTo = -1;
+                        int refinedUpTo = -1;//exclusuve
 
                         @Override
                         public TwoPhaseIterator twoPhaseIterator() {
@@ -161,12 +161,8 @@ class SingleToSegProcessor implements AutoCloseable {
                                 public boolean matches() throws IOException {
                                     int docID = approximation().docID();
                                     int debugDoc = debugDisi.advance(docID);
-                                    if (docID>refinedUpTo) {
+                                    if (docID>=refinedUpTo) {
                                         assert toApprox.get(docID);
-                                        // 1 phase
-                                        // all ranges crosses docID
-                                        // find min upper
-                                        // 2 phase all ranges docID+1 .. minUpper found
                                         refinedUpTo = refine(toApprox, docID);
                                         assert refinedUpTo != Integer.MAX_VALUE;
                                     }
@@ -219,9 +215,11 @@ class SingleToSegProcessor implements AutoCloseable {
             refiner.fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
             joinIndexByName.getValue().intersect(refiner);
         }
-        assert refiner.minUpperSeen < Integer.MAX_VALUE;
-        FixedBitSet.andRange(refiner.toRefined,0,toApprox, toDocID, refiner.minUpperSeen-toDocID);
-        return refiner.minUpperSeen;
+        //assert refiner.minUpperSeen < Integer.MAX_VALUE;
+        int lenAvailable = toDocID+refiner.eagerFetch<toApprox.length() ?
+                refiner.eagerFetch : toApprox.length()-toDocID;
+        FixedBitSet.andRange(refiner.toRefined,0,toApprox, toDocID, lenAvailable);
+        return toDocID+ lenAvailable;
     }
 
     private static void intersectPointsLazy(PointValues indexPoints, LazyVisitor visitor) throws IOException {
@@ -296,18 +294,19 @@ class SingleToSegProcessor implements AutoCloseable {
     }
 
     private static class RefineToApproxVisitor implements PointValues.IntersectVisitor {
-        private FixedBitSet toRefined;
         private JoinIndexHelper.FromContextCache fromCtxLeaf;
         //private final FixedBitSet toApprox;
         private final int toDocID;
-        int minUpperSeen;
-        private int theLastUpperToIdx;
+        //int minUpperSeen;
+        //private int theLastUpperToIdx;
+        final int eagerFetch = Long.BYTES*8;
+        private FixedBitSet toRefined = new FixedBitSet(eagerFetch);
 
         public RefineToApproxVisitor(//FixedBitSet toApprox,
                                      int toDocID) {
             //this.toApprox = toApprox;
             this.toDocID = toDocID;
-            minUpperSeen = Integer.MAX_VALUE;
+            //minUpperSeen = Integer.MAX_VALUE;
         }
 
         @Override
@@ -319,11 +318,9 @@ class SingleToSegProcessor implements AutoCloseable {
         public void visit(int docID, byte[] packedValue) throws IOException {
             int fromIdx = NumericUtils.sortableBytesToInt(packedValue, 0);
             int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
-            minUpperSeen = Math.min(minUpperSeen, theLastUpperToIdx); // sadly it's repeated many times per leaf
-            if(this.toRefined==null) {
-                this.toRefined = new FixedBitSet(minUpperSeen-this.toDocID); // ready to clean this, next leafs might be only be shorter
-            }
-            if (toIdx>=this.toDocID) {
+            //minUpperSeen = Math.min(minUpperSeen, theLastUpperToIdx); // sadly it's repeated many times per leaf
+
+            if (toIdx>=this.toDocID && toIdx<=this.toDocID+eagerFetch) { // TODO strict ??
                 if (fromCtxLeaf.bits.get(fromIdx)) {
                     int refineBitShifted = toIdx - this.toDocID;
                     toRefined.set(refineBitShifted); //no need to ever set it since we refine
@@ -340,13 +337,13 @@ class SingleToSegProcessor implements AutoCloseable {
             int upperToIdx = NumericUtils.sortableBytesToInt(maxPackedValue, Integer.BYTES);
 
             if (fromCtxLeaf.upperDocId < lowerFromIdx || upperFromIdx < fromCtxLeaf.lowerDocId ||
-                    toDocID < lowerToIdx || upperToIdx < toDocID) {
+                    toDocID + eagerFetch < lowerToIdx || upperToIdx < toDocID) {
                 return PointValues.Relation.CELL_OUTSIDE_QUERY;
             } /*else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
         return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the pointstheLastUpperToIdx
 
     }*/
-            theLastUpperToIdx = upperToIdx;
+            //theLastUpperToIdx = upperToIdx;
             return PointValues.Relation.CELL_CROSSES_QUERY;
         }
     }
