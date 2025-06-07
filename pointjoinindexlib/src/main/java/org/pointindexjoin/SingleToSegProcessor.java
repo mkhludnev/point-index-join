@@ -322,7 +322,7 @@ class SingleToSegProcessor implements AutoCloseable {
             int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
             //minUpperSeen = Math.min(minUpperSeen, theLastUpperToIdx); // sadly it's repeated many times per leaf
 
-            if (toIdx>=this.toDocID && toIdx<=this.toDocID+eagerFetch) { // TODO strict ??
+            if (toIdx>=this.toDocID && toIdx<this.toDocID+eagerFetch) {
                 if (fromCtxLeaf.bits.get(fromIdx)) {
                     int refineBitShifted = toIdx - this.toDocID;
                     toRefined.set(refineBitShifted); //no need to ever set it since we refine
