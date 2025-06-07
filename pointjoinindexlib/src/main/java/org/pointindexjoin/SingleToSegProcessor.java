@@ -113,7 +113,8 @@ class SingleToSegProcessor implements AutoCloseable {
         boolean needsVisitDocValues();
     }
 
-    public ScorerSupplier createLazy(SingleToSegSupplier debugBro) throws IOException {
+    public ScorerSupplier createLazy(//SingleToSegSupplier debugBro
+    ) throws IOException {
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
         PointIndexConsumer sink = new PointIndexConsumer() {
             @Override
@@ -138,7 +139,7 @@ class SingleToSegProcessor implements AutoCloseable {
         for (String absentIndexName : absent) {
             throw new IllegalArgumentException("" + absent);
         }
-        assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
+        //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
         if (toApprox.scanIsEmpty()) {
             return null;
         } else {
@@ -148,26 +149,26 @@ class SingleToSegProcessor implements AutoCloseable {
 
                 @Override
                 public Scorer get(long leadCost) throws IOException {
-                    Scorer debugScorer = debugBro.get(leadCost);
+                    //Scorer debugScorer = debugBro.get(leadCost);
                     return new Scorer() {
-                        int refinedUpTo = -1;//exclusuve
+                        int refinedUpTo = -1;//exclusive
 
                         @Override
                         public TwoPhaseIterator twoPhaseIterator() {
 
                             return new TwoPhaseIterator(approximation) {
-                                DocIdSetIterator debugDisi = debugScorer.iterator();
+                                //DocIdSetIterator debugDisi = debugScorer.iterator();
                                 @Override
                                 public boolean matches() throws IOException {
                                     int docID = approximation().docID();
-                                    int debugDoc = debugDisi.advance(docID);
+                                    //int debugDoc = debugDisi.advance(docID);
                                     if (docID>=refinedUpTo) {
                                         assert toApprox.get(docID);
                                         refinedUpTo = refine(toApprox, docID);
                                         assert refinedUpTo != Integer.MAX_VALUE;
                                     }
                                     assert docID<=refinedUpTo;
-                                    assert debugBro.toBits.get(docID)==toApprox.get(docID): "refined["+docID+"]=="+toApprox.get(docID)+" exact=="+debugBro.toBits.get(docID);
+                                    //assert debugBro.toBits.get(docID)==toApprox.get(docID): "refined["+docID+"]=="+toApprox.get(docID)+" exact=="+debugBro.toBits.get(docID);
                                     return toApprox.get(docID);
                                 }
 
@@ -211,6 +212,7 @@ class SingleToSegProcessor implements AutoCloseable {
     private int refine(FixedBitSet toApprox, int toDocID) throws IOException {
         RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
                 toDocID);
+        // TODO this is a little bit awkward, it reads PointValues from closed searcher, how could it's possible?
         for (Map.Entry<String, PointValues> joinIndexByName : pointIndices.entrySet()) {
             refiner.fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
             joinIndexByName.getValue().intersect(refiner);

@@ -34,7 +34,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-@Seed("67DC4AA556A66043")
+//@Seed("67DC4AA556A66043")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
@@ -87,7 +87,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         assertTrue(parentsExpected.isEmpty());
     }
 
-    @Seed("CC2657B0897AE66D")
+    //@Seed("CC2657B0897AE66D")
     public void testBasic() throws IOException {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
@@ -147,7 +147,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         //TopDocs parentResult = toSearcher.search(SortedSetDocValuesField.newSlowExactQuery("id", new BytesRef("639")), 10);
         //System.out.println(parentResult);
         //assertJoin(Arrays.asList("635_39"), childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
-        for (int pass = 0; pass < 2; pass++) {
+        for (int pass = 0; pass < 10; pass++) {
             List<String> childIds = new ArrayList<>(childToParentMap.keySet());
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);
