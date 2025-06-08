@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
@@ -195,11 +196,12 @@ public class JoinIndexHelper {
         return new AbstractMap.SimpleEntry<>(foundIndices, absent);
     }
 
-    static class InnerJoinVisitor implements PointValues.IntersectVisitor {
+    static class InnerJoinVisitor implements PointValues.IntersectVisitor , BooleanSupplier {
         private final FixedBitSet fromBits;
         private final FixedBitSet toBits;
         private final int upperFromQdocNum;
         private final int lowerFromQ;
+        private boolean hasHits = false;
 
         public InnerJoinVisitor(FixedBitSet fromBits, FixedBitSet toBits, int lowerFromQ, int upperFromQdocNum) {
             this.fromBits = fromBits;
@@ -218,6 +220,7 @@ public class JoinIndexHelper {
             int fromIdx = NumericUtils.sortableBytesToInt(packedValue, 0);
             int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
             if (fromBits.get(fromIdx)) {
+                hasHits=true;
                 toBits.set(toIdx);
             }
         }
@@ -232,6 +235,11 @@ public class JoinIndexHelper {
                 return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the points
             }*/
             return PointValues.Relation.CELL_CROSSES_QUERY;
+        }
+
+        @Override
+        public boolean getAsBoolean() {
+            return hasHits;
         }
     }
 

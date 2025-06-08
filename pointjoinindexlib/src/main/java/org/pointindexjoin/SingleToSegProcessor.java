@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 
@@ -31,7 +32,7 @@ class SingleToSegProcessor implements AutoCloseable {
     final private SearcherManager indexManager;
     final private Map<String, PointValues> pointIndices;
     final private Set<String> absent;
-    final private IndexSearcher pointIndexSearcher;
+    private IndexSearcher pointIndexSearcher;
     private final String toField;
     private final String fromField;
 
@@ -63,32 +64,24 @@ class SingleToSegProcessor implements AutoCloseable {
     @Override
     public void close() throws Exception {
         this.indexManager.release(pointIndexSearcher);
-        //pointIndexSearcher = null;
+        pointIndexSearcher = null;
     }
 
-    public SingleToSegSupplier createEager(Supplier<IndexWriter> writerFactory) throws IOException {
+    public ScorerSupplier createEager(Supplier<IndexWriter> writerFactory) throws IOException {
         FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
 
-        PointIndexConsumer sink = new PointIndexConsumer() {
-            @Override
-            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
-                // TODO track emptiness
-                indexPoints.intersect(new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
-                        fromCtx.lowerDocId, fromCtx.upperDocId));
-            }
+        EagerJoiner sink = new EagerJoiner(toBits);
 
-            @Override
-            public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
-                // TODO track emptiness
-                return (f, t) -> {
-                    if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
-                        toBits.set(t);
-                    }
-                    return 0;
-                };
-            }
-        };
+        walkAllFromSegIncSegs(writerFactory, sink);
 
+        if (sink.hasHits()) {
+            return new BitSetScorerSupplier(toBits);
+        } else {
+            return null;
+        }
+    }
+
+    private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink) throws IOException {
         for (Map.Entry<String, PointValues> joinIndexByName : pointIndices.entrySet()) {
             JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
             sink.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
@@ -102,11 +95,6 @@ class SingleToSegProcessor implements AutoCloseable {
                     absentIndexName,
                     sink.createTupleConsumer(fromCtxLeaf));
         }
-
-        if (toBits.scanIsEmpty()) {
-            return null;
-        }
-        return new SingleToSegSupplier(toBits);
     }
 
     interface LazyVisitor extends PointValues.IntersectVisitor{
@@ -116,96 +104,14 @@ class SingleToSegProcessor implements AutoCloseable {
     public ScorerSupplier createLazy(//SingleToSegSupplier debugBro
     ) throws IOException {
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
-        PointIndexConsumer sink = new PointIndexConsumer() {
-            @Override
-            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
-                // TODO track emptiness
-                //PointValues.intersect((PointValues.IntersectVisitor) new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
-                //        fromCtx.lowerDocId, fromCtx.upperDocId), pointTree);
-                LazyVisitor visitor = new ApproxDumper(fromCtx.bits, toApprox);
-                intersectPointsLazy(indexPoints, visitor);
-            }
+        PointIndexConsumer sink = new ApproxIndexConsumer(toApprox);
 
-            @Override
-            public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
-                throw new UnsupportedOperationException();
-            }
-        };
-
-        for (Map.Entry<String, PointValues> joinIndexByName : pointIndices.entrySet()) {
-            JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
-            sink.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
-        }
-        for (String absentIndexName : absent) {
-            throw new IllegalArgumentException("" + absent);
-        }
+        walkAllFromSegIncSegs(null, sink);
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
-        if (toApprox.scanIsEmpty()) {
-            return null;
+        if (sink.hasHits()) {
+            return new RefineTwoPhaseSupplier(toApprox);
         } else {
-            int cty= toApprox.cardinality();
-            return new ScorerSupplier() {
-                DocIdSetIterator approximation = new BitSetIterator(toApprox, cty );
-
-                @Override
-                public Scorer get(long leadCost) throws IOException {
-                    //Scorer debugScorer = debugBro.get(leadCost);
-                    return new Scorer() {
-                        int refinedUpTo = -1;//exclusive
-
-                        @Override
-                        public TwoPhaseIterator twoPhaseIterator() {
-
-                            return new TwoPhaseIterator(approximation) {
-                                //DocIdSetIterator debugDisi = debugScorer.iterator();
-                                @Override
-                                public boolean matches() throws IOException {
-                                    int docID = approximation().docID();
-                                    //int debugDoc = debugDisi.advance(docID);
-                                    if (docID>=refinedUpTo) {
-                                        assert toApprox.get(docID);
-                                        refinedUpTo = refine(toApprox, docID);
-                                        assert refinedUpTo != Integer.MAX_VALUE;
-                                    }
-                                    assert docID<=refinedUpTo;
-                                    //assert debugBro.toBits.get(docID)==toApprox.get(docID): "refined["+docID+"]=="+toApprox.get(docID)+" exact=="+debugBro.toBits.get(docID);
-                                    return toApprox.get(docID);
-                                }
-
-                                @Override
-                                public float matchCost() {
-                                    return Integer.MAX_VALUE;
-                                }
-                            };
-                        }
-
-                        @Override
-                        public int docID() {
-                            return approximation.docID();
-                        }
-
-                        @Override
-                        public DocIdSetIterator iterator() {
-                            return TwoPhaseIterator.asDocIdSetIterator(twoPhaseIterator());
-                        }
-
-                        @Override
-                        public float getMaxScore(int upTo) throws IOException {
-                            return 0;
-                        }
-
-                        @Override
-                        public float score() throws IOException {
-                            return 0;
-                        }
-                    };
-                }
-
-                @Override
-                public long cost() {
-                    return cty;
-                }
-            };
+            return null;
         }
     }
 
@@ -255,11 +161,12 @@ class SingleToSegProcessor implements AutoCloseable {
         //assert pointTree.moveToParent() == false;
     }
 
-    private static class ApproxDumper implements LazyVisitor {
+    private static class ApproxDumper implements LazyVisitor, BooleanSupplier {
         private final FixedBitSet toApprox;
         private FixedBitSet fromBits;
         private int upperToIdx;
         private int lowerToIdx;
+        private boolean hasHits;
 
         public ApproxDumper(FixedBitSet fromCtx, FixedBitSet toApprox) {
             this.toApprox = toApprox;
@@ -269,6 +176,7 @@ class SingleToSegProcessor implements AutoCloseable {
         @Override
         public boolean needsVisitDocValues() {
             toApprox.set(lowerToIdx, upperToIdx+1);
+            hasHits=true;
             return false; // this trick gives all-bits approximation due to using
             // min-maxes from header (non-leaf) nodes,
             // however refining kicks in quite early.
@@ -296,6 +204,11 @@ class SingleToSegProcessor implements AutoCloseable {
                 return PointValues.Relation.CELL_CROSSES_QUERY;
             }
             return PointValues.Relation.CELL_OUTSIDE_QUERY;
+        }
+
+        @Override
+        public boolean getAsBoolean() {
+            return hasHits;
         }
     }
 
@@ -354,12 +267,12 @@ class SingleToSegProcessor implements AutoCloseable {
         }
     }
 
-    private static class SingleToSegSupplier extends ScorerSupplier {
+    private static class BitSetScorerSupplier extends ScorerSupplier {
 
         private final int cardinality;
         private final FixedBitSet toBits;
 
-        public SingleToSegSupplier(FixedBitSet toBits) {
+        public BitSetScorerSupplier(FixedBitSet toBits) {
             this.toBits = toBits;
             cardinality = toBits.cardinality();
         }
@@ -372,6 +285,141 @@ class SingleToSegProcessor implements AutoCloseable {
         @Override
         public long cost() {
             return cardinality;
+        }
+    }
+
+    private static class EagerJoiner implements PointIndexConsumer {
+        private final FixedBitSet toBits;
+        private boolean hasHits = false;
+
+        public EagerJoiner(FixedBitSet toBits) {
+            this.toBits = toBits;
+        }
+
+        @Override
+        public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
+            // TODO track emptiness
+            JoinIndexHelper.InnerJoinVisitor toBitsDumper = new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
+                    fromCtx.lowerDocId, fromCtx.upperDocId);
+            indexPoints.intersect(toBitsDumper);
+            hasHits|=toBitsDumper.getAsBoolean();
+        }
+
+        @Override
+        public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
+            // TODO return void
+            return (f, t) -> {
+                if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
+                    toBits.set(t);
+                    hasHits=true;
+                }
+                return 0;
+            };
+        }
+
+        @Override
+        public boolean hasHits() {
+            return hasHits;
+        }
+    }
+
+    private static class ApproxIndexConsumer implements PointIndexConsumer {
+        private final FixedBitSet toApprox;
+        private boolean hasHits = false;
+
+        public ApproxIndexConsumer(FixedBitSet toApprox) {
+            this.toApprox = toApprox;
+        }
+
+        @Override
+        public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
+            // TODO track emptiness
+            //PointValues.intersect((PointValues.IntersectVisitor) new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
+            //        fromCtx.lowerDocId, fromCtx.upperDocId), pointTree);
+            ApproxDumper visitor = new ApproxDumper(fromCtx.bits, toApprox);
+            intersectPointsLazy(indexPoints, visitor);
+            hasHits|=visitor.getAsBoolean();
+        }
+
+        @Override
+        public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean hasHits() {
+            return hasHits;
+        }
+    }
+
+    private class RefineTwoPhaseSupplier extends ScorerSupplier {
+        private final FixedBitSet toApprox;
+        private final int cty;
+        DocIdSetIterator approximation;
+
+        public RefineTwoPhaseSupplier(FixedBitSet toApprox) {
+            this.toApprox = toApprox;
+            this.cty = toApprox.cardinality();
+            approximation = new BitSetIterator(toApprox, cty);
+        }
+
+        @Override
+        public Scorer get(long leadCost) throws IOException {
+            //Scorer debugScorer = debugBro.get(leadCost);
+            return new Scorer() {
+                int refinedUpTo = -1;//exclusive
+
+                @Override
+                public TwoPhaseIterator twoPhaseIterator() {
+
+                    return new TwoPhaseIterator(approximation) {
+                        //DocIdSetIterator debugDisi = debugScorer.iterator();
+                        @Override
+                        public boolean matches() throws IOException {
+                            int docID = approximation().docID();
+                            //int debugDoc = debugDisi.advance(docID);
+                            if (docID>=refinedUpTo) {
+                                assert toApprox.get(docID);
+                                refinedUpTo = refine(toApprox, docID);
+                                assert refinedUpTo != Integer.MAX_VALUE;
+                            }
+                            assert docID<=refinedUpTo;
+                            //assert debugBro.toBits.get(docID)==toApprox.get(docID): "refined["+docID+"]=="+toApprox.get(docID)+" exact=="+debugBro.toBits.get(docID);
+                            return toApprox.get(docID);
+                        }
+
+                        @Override
+                        public float matchCost() {
+                            return Integer.MAX_VALUE;
+                        }
+                    };
+                }
+
+                @Override
+                public int docID() {
+                    return approximation.docID();
+                }
+
+                @Override
+                public DocIdSetIterator iterator() {
+                    return TwoPhaseIterator.asDocIdSetIterator(twoPhaseIterator());
+                }
+
+                @Override
+                public float getMaxScore(int upTo) throws IOException {
+                    return 0;
+                }
+
+                @Override
+                public float score() throws IOException {
+                    return 0;
+                }
+            };
+        }
+
+        @Override
+        public long cost() {
+            return cty;
         }
     }
 }
