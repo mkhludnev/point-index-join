@@ -269,7 +269,10 @@ class SingleToSegProcessor implements AutoCloseable {
         @Override
         public boolean needsVisitDocValues() {
             toApprox.set(lowerToIdx, upperToIdx+1);
-            return false;
+            return false; // this trick gives all-bits approximation due to using
+            // min-maxes from header (non-leaf) nodes,
+            // however refining kicks in quite early.
+            // to get narrow approx we need an own bkd-tree.
         }
 
         @Override
@@ -279,6 +282,7 @@ class SingleToSegProcessor implements AutoCloseable {
 
         @Override
         public void visit(int docID, byte[] packedValue) throws IOException {
+            //toApprox.set(lowerToIdx, upperToIdx+1);
             throw new UnsupportedOperationException();
         }
 
