@@ -57,7 +57,7 @@ public class JoinIndexQuery extends Query {
 
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
-        return new JoinIndexWeight(this, scoreMode);
+        return new JoinIndexWeight(searcher, this, scoreMode);
     }
 
     @Override

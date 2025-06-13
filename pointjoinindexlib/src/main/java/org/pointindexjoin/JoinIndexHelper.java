@@ -28,9 +28,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class JoinIndexHelper {
     static final int EMPTY_JOIN_1D = 0;
@@ -194,6 +197,34 @@ public class JoinIndexHelper {
             absent = Set.of();
         }
         return new AbstractMap.SimpleEntry<>(foundIndices, absent);
+    }
+
+    Object extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, List<LeafReaderContext> toSegments) throws IOException {
+        Stream<Map.Entry<LeafReaderContext, LeafReaderContext>> fromToLeafs = fromSegments.stream().flatMap(fromLeaf -> toSegments.stream().map(toLeaf -> new AbstractMap.SimpleEntry<>(fromLeaf, toLeaf)));
+        Map<String, Map.Entry<LeafReaderContext, LeafReaderContext>> fromToLeafByPointsName = fromToLeafs
+                .collect(Collectors.toMap(fromTo -> getPointIndexFieldName(getSegmentName(fromTo.getKey()), getSegmentName(fromTo.getValue())), Function.identity()));
+        List<List<PointValues>> indicesByTo = toSegments.stream().map(t->new ArrayList<PointValues>(fromSegments.size())).toList();
+        IndexSearcher pointIndexSegments = pointIndexManager.acquire();
+        try{
+            pointIndexSegments.getIndexReader().leaves().stream().forEach(
+                    ptIdxLeaf-> {
+                FieldInfos fieldInfos = ptIdxLeaf.reader().getFieldInfos();
+                for (FieldInfo fieldInfo : fieldInfos) {
+                    if (fromToLeafByPointsName.containsKey(fieldInfo.name)) {
+                        Map.Entry<LeafReaderContext, LeafReaderContext> fromTo = fromToLeafByPointsName.get(fieldInfo.name);
+                        indicesByTo.get(fromTo.getValue().ord).set(fromTo.getKey().ord, (ptIdxLeaf.reader()).getPointValues(fieldInfo.name));
+                    }else {
+                        // TODO removed segments
+                    }
+                }
+            });
+            // we have indices, thombstones and nulls for absents
+        }finally {
+            pointIndexManager.release(pointIndexSegments);
+            pointIndexSegments=null;
+        }
+        List<SingleToSegProcessor> toSegProcessors = indicesByTo.stream().map(pointsByFrom-> new SingleToSegProcessor(pointsByFrom)).toList();
+        return toSegProcessors;
     }
 
     static class InnerJoinVisitor implements PointValues.IntersectVisitor , BooleanSupplier {
