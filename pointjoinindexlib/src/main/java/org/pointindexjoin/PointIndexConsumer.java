@@ -9,5 +9,6 @@ interface PointIndexConsumer {
     void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues idx) throws IOException;
 
     IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx);
+
     boolean hasHits();
 }

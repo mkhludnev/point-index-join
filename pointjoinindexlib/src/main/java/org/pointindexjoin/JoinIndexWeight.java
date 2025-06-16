@@ -19,13 +19,16 @@ class JoinIndexWeight extends Weight {
     public JoinIndexWeight(IndexSearcher toSearcher, JoinIndexQuery joinIndexQuery, ScoreMode scoreMode) throws IOException {
         super(joinIndexQuery);
         this.joinIndexQuery = joinIndexQuery;
-       // this.scoreMode = scoreMode;
+        // this.scoreMode = scoreMode;
         this.fromLeaves = joinIndexQuery.cacheFromQuery(); // TODO defer it even further
-        this.toSegments = new SingleToSegProcessor[toSearcher.getIndexReader().leaves().size()];
-        for(LeafReaderContext toCtx:toSearcher.getIndexReader().leaves()) {
-            toSegments[toCtx.ord]=new SingleToSegProcessor(joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toCtx);
-        }
-        // loop here segments and create all SegProcessors.
+        List<SingleToSegProcessor> toSegProcss = JoinIndexHelper.extractIndices(joinIndexQuery.fromSearcher.getIndexReader().leaves(),
+                joinIndexQuery.indexManager,
+                toSearcher.getIndexReader().leaves(),
+                joinIndexQuery.fromField,
+                joinIndexQuery.toField,
+                fromLeaves
+        );
+        this.toSegments = toSegProcss.toArray(new SingleToSegProcessor[]{});
     }
 
     @Override
@@ -38,15 +41,12 @@ class JoinIndexWeight extends Weight {
         if (fromLeaves.isEmpty()) {
             return null;
         }
-        try (SingleToSegProcessor joinConsumer = new SingleToSegProcessor(joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toContext)) { // move this precompute to createWeight()
-            if (joinConsumer.isFullyIndexed()) {
-                return joinConsumer.createLazy(//new SingleToSegProcessor(joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toContext).createEager(joinIndexQuery.writerFactory)
-                );
-            } else {
-                return joinConsumer.createEager(joinIndexQuery.writerFactory);
-            }
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        SingleToSegProcessor joinConsumer = toSegments[toContext.ord];
+        if (joinConsumer.isFullyIndexed()) {
+            return joinConsumer.createLazy(//new SingleToSegProcessor(joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toContext).createEager(joinIndexQuery.writerFactory)
+            );
+        } else {
+            return joinConsumer.createEager(joinIndexQuery.writerFactory);
         }
     }
 

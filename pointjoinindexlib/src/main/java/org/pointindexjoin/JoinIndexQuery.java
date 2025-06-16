@@ -20,12 +20,12 @@ import java.util.List;
 import java.util.function.Supplier;
 
 public class JoinIndexQuery extends Query {
-    private final IndexSearcher fromSearcher;
-    private final Query fromQuery;
+    final IndexSearcher fromSearcher;
     final String fromField;
     final String toField;
     final SearcherManager indexManager;
     final Supplier<IndexWriter> writerFactory;
+    private final Query fromQuery;
 
     public JoinIndexQuery(IndexSearcher fromSearcher, Query fromQuery, String fromField, String toField, SearcherManager indexManager, Supplier<IndexWriter> writerFactory) {
         this.fromSearcher = fromSearcher;
@@ -44,8 +44,8 @@ public class JoinIndexQuery extends Query {
         if (rewrittenFrom.equals(matchNoDocsQuery)) {
             return matchNoDocsQuery;
         }
-        if (rewrittenFrom!=toRewriteFrom) {
-            return new JoinIndexQuery(fromSearcher, rewrittenFrom,fromField,toField,indexManager,writerFactory) {
+        if (rewrittenFrom != toRewriteFrom) {
+            return new JoinIndexQuery(fromSearcher, rewrittenFrom, fromField, toField, indexManager, writerFactory) {
                 @Override
                 public Query rewrite(IndexSearcher indexSearcher) throws IOException {
                     return this;
