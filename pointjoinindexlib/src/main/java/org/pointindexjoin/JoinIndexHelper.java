@@ -199,14 +199,14 @@ public class JoinIndexHelper {
         return new AbstractMap.SimpleEntry<>(foundIndices, absent);
     }
 
-    static List<SingleToSegProcessor> extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, List<LeafReaderContext> toSegments, String fromField, String toField, List<FromContextCache> fromLeavesCached) throws IOException {
+    static SingleToSegProcessor[] extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, List<LeafReaderContext> toSegments, String fromField, String toField, List<FromContextCache> fromLeavesCached) throws IOException {
         Stream<Map.Entry<LeafReaderContext, LeafReaderContext>> fromToLeafs = fromSegments.stream().flatMap(fromLeaf -> toSegments.stream().map(toLeaf -> new AbstractMap.SimpleEntry<>(fromLeaf, toLeaf)));
         Map<String, Map.Entry<LeafReaderContext, LeafReaderContext>> fromToLeafByPointsName = fromToLeafs
                 .collect(Collectors.toMap(fromTo -> getPointIndexFieldName(getSegmentName(fromTo.getKey()), getSegmentName(fromTo.getValue())), Function.identity()));
-        List<ArrayList<PointValues>> indicesByTo = toSegments.stream().map(t -> new ArrayList<PointValues>(fromSegments.size())).toList();
-        List<ArrayList<String>> absentPointsByTo = toSegments.stream().map(t -> new ArrayList<String>(fromSegments.size())).toList();
+        List<PointValues[]> indicesByTo = toSegments.stream().map(t -> new PointValues[fromSegments.size()]).toList();
+        List<String[]> absentPointsByTo = toSegments.stream().map(t -> new String[fromSegments.size()]).toList();
         // this is absolutely horrible nasty thing. We need to make it cluelessness
-        fromToLeafByPointsName.entrySet().stream().forEach(toSegByFromSegByPointIndexName -> absentPointsByTo.get(toSegByFromSegByPointIndexName.getValue().getValue().ord).set(toSegByFromSegByPointIndexName.getValue().getKey().ord, toSegByFromSegByPointIndexName.getKey()));
+        fromToLeafByPointsName.entrySet().stream().forEach(toSegByFromSegByPointIndexName -> absentPointsByTo.get(toSegByFromSegByPointIndexName.getValue().getValue().ord)[toSegByFromSegByPointIndexName.getValue().getKey().ord] = toSegByFromSegByPointIndexName.getKey());
         IndexSearcher pointIndexSegments = pointIndexManager.acquire();
         try {
             for (LeafReaderContext pointSegment : pointIndexSegments.getIndexReader().leaves()) {
@@ -216,10 +216,10 @@ public class JoinIndexHelper {
                         Map.Entry<LeafReaderContext, LeafReaderContext> fromTo = fromToLeafByPointsName.get(fieldInfo.name);
                         if (fieldInfo.getPointDimensionCount() == 2) {
                             PointValues pointIndex = (pointSegment.reader()).getPointValues(fieldInfo.name);
-                            indicesByTo.get(fromTo.getValue().ord).set(fromTo.getKey().ord, pointIndex);
+                            indicesByTo.get(fromTo.getValue().ord)[fromTo.getKey().ord] = pointIndex;
                         } // else 1D tombstone
                         // anyway, wipe since it's not absent
-                        absentPointsByTo.get(fromTo.getValue().ord).set(fromTo.getKey().ord, null);
+                        absentPointsByTo.get(fromTo.getValue().ord)[fromTo.getKey().ord] = null;
                     } else {
                         // TODO removed segments
                     }
@@ -230,11 +230,11 @@ public class JoinIndexHelper {
             pointIndexManager.release(pointIndexSegments);
             pointIndexSegments = null;
         }
-        List<SingleToSegProcessor> toSegProcessors = new ArrayList<>(indicesByTo.size());
+        SingleToSegProcessor[] toSegProcessors = new SingleToSegProcessor[indicesByTo.size()];
         for (int toSegOrd = 0; toSegOrd < indicesByTo.size(); toSegOrd++) {
-            toSegProcessors.set(toSegOrd, new SingleToSegProcessor(fromField, toField, pointIndexManager, fromLeavesCached, toSegments.get(toSegOrd),
-                    indicesByTo.get(toSegOrd).toArray(new PointValues[]{}),
-                    absentPointsByTo.get(toSegOrd).toArray(new String[]{})));
+            toSegProcessors[toSegOrd] = new SingleToSegProcessor(fromField, toField, pointIndexManager, fromLeavesCached, toSegments.get(toSegOrd),
+                    indicesByTo.get(toSegOrd),
+                    absentPointsByTo.get(toSegOrd));
         }
 //        List<SingleToSegProcessor> toSegProcessors = indicesByTo.stream().map(pointsByFrom-> new SingleToSegProcessor(pointsByFrom)).toList();
         return toSegProcessors;

@@ -134,12 +134,12 @@ class SingleToSegProcessor //implements AutoCloseable
     private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink) throws IOException {
 
         for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
-            if (pointValuesByFromSegOrd[fromLeaf.lrc.ord] != null) {
+            if (fromLeaf != null && pointValuesByFromSegOrd[fromLeaf.lrc.ord] != null) {
                 sink.onIndexPage(fromLeaf, pointValuesByFromSegOrd[fromLeaf.lrc.ord]);
             }
         }
         for (JoinIndexHelper.FromContextCache fromLeaf : firstAbsentOrd >= 0 ? fromLeaves.subList(firstAbsentOrd, fromLeaves.size()) : List.<JoinIndexHelper.FromContextCache>of()) {
-            if (absentIndexNamesByFromOrd[fromLeaf.lrc.ord] != null) {
+            if (fromLeaf != null && absentIndexNamesByFromOrd[fromLeaf.lrc.ord] != null) {
                 JoinIndexHelper.indexJoinSegments(
                         this.indexManager, writerFactory,
                         fromLeaf.lrc.reader().getSortedSetDocValues(fromField),
@@ -253,8 +253,8 @@ class SingleToSegProcessor //implements AutoCloseable
         final int eagerFetch = Long.BYTES * 8;
         //private final FixedBitSet toApprox;
         private final int toDocID;
-        private JoinIndexHelper.FromContextCache fromCtxLeaf;
         private final FixedBitSet toRefined = new FixedBitSet(eagerFetch);
+        private JoinIndexHelper.FromContextCache fromCtxLeaf;
 
         public RefineToApproxVisitor(//FixedBitSet toApprox,
                                      int toDocID) {

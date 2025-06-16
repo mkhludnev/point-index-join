@@ -21,14 +21,14 @@ class JoinIndexWeight extends Weight {
         this.joinIndexQuery = joinIndexQuery;
         // this.scoreMode = scoreMode;
         this.fromLeaves = joinIndexQuery.cacheFromQuery(); // TODO defer it even further
-        List<SingleToSegProcessor> toSegProcss = JoinIndexHelper.extractIndices(joinIndexQuery.fromSearcher.getIndexReader().leaves(),
+        this.toSegments = JoinIndexHelper.extractIndices(joinIndexQuery.fromSearcher.getIndexReader().leaves(),
                 joinIndexQuery.indexManager,
                 toSearcher.getIndexReader().leaves(),
                 joinIndexQuery.fromField,
                 joinIndexQuery.toField,
                 fromLeaves
         );
-        this.toSegments = toSegProcss.toArray(new SingleToSegProcessor[]{});
+        //this.toSegments = toSegProcss.toArray(new SingleToSegProcessor[]{});
     }
 
     @Override
