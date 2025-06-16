@@ -43,8 +43,7 @@ class JoinIndexWeight extends Weight {
         }
         SingleToSegProcessor joinConsumer = toSegments[toContext.ord];
         if (joinConsumer.isFullyIndexed()) {
-            return joinConsumer.createLazy(//new SingleToSegProcessor(joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toContext).createEager(joinIndexQuery.writerFactory)
-            );
+            return joinConsumer.createLazy();
         } else {
             return joinConsumer.createEager(joinIndexQuery.writerFactory);
         }

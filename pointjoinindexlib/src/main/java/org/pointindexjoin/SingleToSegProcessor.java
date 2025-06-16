@@ -49,20 +49,6 @@ class SingleToSegProcessor //implements AutoCloseable
         this.pointValuesByFromSegOrd = pointValuesByFromSegOrd;
         this.absentIndexNamesByFromOrd = absentIndexNamesByFromOrd;
         this.firstAbsentOrd = indexOfNonNullOrNeg(absentIndexNamesByFromOrd);
-/*        pointIndexSearcher = indexManager.acquire();
-
-        indexPointsNames = new LinkedHashMap<>(fromLeaves1.size());
-        String toSegmentName = JoinIndexHelper.getSegmentName(toContext);
-        // TODO approximate via sibling pages
-        //nextFromLeaf:
-        for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves1) {
-            String fromSegmentName = JoinIndexHelper.getSegmentName(fromLeaf.lrc);
-            String indexFieldName = JoinIndexHelper.getPointIndexFieldName(fromSegmentName, toSegmentName);
-            indexPointsNames.put(indexFieldName, fromLeaf);
-        }
-        AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> indicesAndAbsent = JoinIndexHelper.extractIndices(pointIndexSearcher, indexPointsNames.keySet());
-        this.pointIndices = indicesAndAbsent.getKey();
-        this.absent = indicesAndAbsent.getValue();*/
         toField = toField1;
         fromField = fromField1;
     }
@@ -138,29 +124,24 @@ class SingleToSegProcessor //implements AutoCloseable
                 sink.onIndexPage(fromLeaf, pointValuesByFromSegOrd[fromLeaf.lrc.ord]);
             }
         }
-        for (JoinIndexHelper.FromContextCache fromLeaf : firstAbsentOrd >= 0 ? fromLeaves.subList(firstAbsentOrd, fromLeaves.size()) : List.<JoinIndexHelper.FromContextCache>of()) {
-            if (fromLeaf != null && absentIndexNamesByFromOrd[fromLeaf.lrc.ord] != null) {
-                JoinIndexHelper.indexJoinSegments(
-                        this.indexManager, writerFactory,
-                        fromLeaf.lrc.reader().getSortedSetDocValues(fromField),
-                        toContext.reader().getSortedSetDocValues(toField),
-                        absentIndexNamesByFromOrd[fromLeaf.lrc.ord],
-                        sink.createTupleConsumer(fromLeaf));
+        if (firstAbsentOrd >= 0) {
+            for (JoinIndexHelper.FromContextCache fromLeaf : //firstAbsentOrd >= 0 ?
+                    fromLeaves
+                //        .subList(firstAbsentOrd, fromLeaves.size()) : List.<JoinIndexHelper.FromContextCache>of()
+            ) {
+                if (fromLeaf.lrc.ord < firstAbsentOrd) {
+                    continue;
+                }
+                if (absentIndexNamesByFromOrd[fromLeaf.lrc.ord] != null) {
+                    JoinIndexHelper.indexJoinSegments(
+                            this.indexManager, writerFactory,
+                            fromLeaf.lrc.reader().getSortedSetDocValues(fromField),
+                            toContext.reader().getSortedSetDocValues(toField),
+                            absentIndexNamesByFromOrd[fromLeaf.lrc.ord],
+                            sink.createTupleConsumer(fromLeaf));
+                }
             }
         }
-        /*for (Map.Entry<String, PointValues> joinIndexByName : pointIndices.entrySet()) {
-            JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(joinIndexByName.getKey());
-            sink.onIndexPage(fromCtxLeaf, joinIndexByName.getValue());
-        }
-        for (String absentIndexName : absent) {
-            JoinIndexHelper.FromContextCache fromCtxLeaf = indexPointsNames.get(absentIndexName);
-            JoinIndexHelper.indexJoinSegments(
-                    this.indexManager, writerFactory,
-                    fromCtxLeaf.lrc.reader().getSortedSetDocValues(fromField),
-                    toContext.reader().getSortedSetDocValues(toField),
-                    absentIndexName,
-                    sink.createTupleConsumer(fromCtxLeaf));
-        }*/
     }
 
     public ScorerSupplier createLazy(//SingleToSegSupplier debugBro
@@ -181,9 +162,9 @@ class SingleToSegProcessor //implements AutoCloseable
         RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
                 toDocID);
         // TODO this is a little bit awkward, it reads PointValues from closed searcher, how could it's possible?
-        for (int fromSegOrd = 0; fromSegOrd < this.pointValuesByFromSegOrd.length; fromSegOrd++) {
-            refiner.fromCtxLeaf = this.fromLeaves.get(fromSegOrd);
-            this.pointValuesByFromSegOrd[fromSegOrd].intersect(refiner);
+        for (JoinIndexHelper.FromContextCache cacheFrom : fromLeaves) {
+            refiner.fromCtxLeaf = cacheFrom;
+            this.pointValuesByFromSegOrd[cacheFrom.lrc.ord].intersect(refiner);
         }
         //assert refiner.minUpperSeen < Integer.MAX_VALUE;
         int lenAvailable = toDocID + refiner.eagerFetch < toApprox.length() ?

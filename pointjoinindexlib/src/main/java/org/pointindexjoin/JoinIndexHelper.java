@@ -17,23 +17,15 @@ import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
 import java.io.IOException;
-import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
-import java.util.function.Function;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class JoinIndexHelper {
     static final int EMPTY_JOIN_1D = 0;
@@ -164,80 +156,63 @@ public class JoinIndexHelper {
         Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
-    static void findIndices(IndexSearcher pointIndexSearcher, Set<String> indexFieldNames,
-                            BiConsumer<FieldInfo, PointValues> downstream) throws IOException {
-        for (LeafReaderContext pointIndexLeaf : pointIndexSearcher.getIndexReader().leaves()) {
-            FieldInfos fieldInfos = pointIndexLeaf.reader().getFieldInfos();
-            for (FieldInfo fieldInfo : fieldInfos) {
-                if (indexFieldNames.contains(fieldInfo.name)) {
-                    downstream.accept(fieldInfo, (pointIndexLeaf.reader()).getPointValues(fieldInfo.name));
-                }
-            }
-        }
-    }
-
-    static AbstractMap.SimpleEntry<Map<String, PointValues>, Set<String>> extractIndices(IndexSearcher pointIndexSearcher, Set<String> indexFieldNames) throws IOException {
-        Map<String, PointValues> foundIndices = new LinkedHashMap<>();
-        List<String> empty = new ArrayList<>();
-        findIndices(pointIndexSearcher, indexFieldNames, (f, v) -> {
-            if (indexFieldNames.contains(f.name)) {
-                if (f.getPointDimensionCount() == 2) {
-                    foundIndices.put(f.name, v);
-                } else {
-                    empty.add(f.name);
-                }
-            }
-        });
-        Set<String> absent;
-        if (foundIndices.size() + empty.size() < indexFieldNames.size()) {
-            absent = new LinkedHashSet<>(indexFieldNames);
-            absent.removeAll(empty);
-            absent.removeAll(foundIndices.keySet());
-        } else {
-            absent = Set.of();
-        }
-        return new AbstractMap.SimpleEntry<>(foundIndices, absent);
-    }
-
     static SingleToSegProcessor[] extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, List<LeafReaderContext> toSegments, String fromField, String toField, List<FromContextCache> fromLeavesCached) throws IOException {
-        Stream<Map.Entry<LeafReaderContext, LeafReaderContext>> fromToLeafs = fromSegments.stream().flatMap(fromLeaf -> toSegments.stream().map(toLeaf -> new AbstractMap.SimpleEntry<>(fromLeaf, toLeaf)));
-        Map<String, Map.Entry<LeafReaderContext, LeafReaderContext>> fromToLeafByPointsName = fromToLeafs
-                .collect(Collectors.toMap(fromTo -> getPointIndexFieldName(getSegmentName(fromTo.getKey()), getSegmentName(fromTo.getValue())), Function.identity()));
-        List<PointValues[]> indicesByTo = toSegments.stream().map(t -> new PointValues[fromSegments.size()]).toList();
-        List<String[]> absentPointsByTo = toSegments.stream().map(t -> new String[fromSegments.size()]).toList();
-        // this is absolutely horrible nasty thing. We need to make it cluelessness
-        fromToLeafByPointsName.entrySet().stream().forEach(toSegByFromSegByPointIndexName -> absentPointsByTo.get(toSegByFromSegByPointIndexName.getValue().getValue().ord)[toSegByFromSegByPointIndexName.getValue().getKey().ord] = toSegByFromSegByPointIndexName.getKey());
-        IndexSearcher pointIndexSegments = pointIndexManager.acquire();
+
+        // 1. Build mapping from point index name to (fromLeaf, toLeaf) pair
+        Map<String, Map.Entry<LeafReaderContext, LeafReaderContext>> pointIndexNameToPair = new HashMap<>();
+        for (LeafReaderContext fromLeaf : fromSegments) {
+            for (LeafReaderContext toLeaf : toSegments) {
+                String pointIndexName = getPointIndexFieldName(getSegmentName(fromLeaf), getSegmentName(toLeaf));
+                pointIndexNameToPair.put(pointIndexName, Map.entry(fromLeaf, toLeaf));
+            }
+        }
+
+        // 2. Prepare result containers
+        int fromSize = fromSegments.size(), toSize = toSegments.size();
+        List<PointValues[]> indicesByTo = new ArrayList<>(toSize);
+        List<String[]> absentPointsByTo = new ArrayList<>(toSize);
+        for (int i = 0; i < toSize; i++) {
+            indicesByTo.add(new PointValues[fromSize]);
+            absentPointsByTo.add(new String[fromSize]);
+        }
+
+        // 3. Mark all as absent initially
+        for (var entry : pointIndexNameToPair.entrySet()) {
+            int fromOrd = entry.getValue().getKey().ord;
+            int toOrd = entry.getValue().getValue().ord;
+            absentPointsByTo.get(toOrd)[fromOrd] = entry.getKey();
+        }
+
+        // 4. Fill found indices, clear absent markers
+        IndexSearcher searcher = pointIndexManager.acquire();
         try {
-            for (LeafReaderContext pointSegment : pointIndexSegments.getIndexReader().leaves()) {
+            for (LeafReaderContext pointSegment : searcher.getIndexReader().leaves()) {
                 FieldInfos fieldInfos = pointSegment.reader().getFieldInfos();
                 for (FieldInfo fieldInfo : fieldInfos) {
-                    if (fromToLeafByPointsName.containsKey(fieldInfo.name)) {
-                        Map.Entry<LeafReaderContext, LeafReaderContext> fromTo = fromToLeafByPointsName.get(fieldInfo.name);
+                    Map.Entry<LeafReaderContext, LeafReaderContext> pair = pointIndexNameToPair.get(fieldInfo.name);
+                    if (pair != null) {
+                        int fromOrd = pair.getKey().ord;
+                        int toOrd = pair.getValue().ord;
                         if (fieldInfo.getPointDimensionCount() == 2) {
-                            PointValues pointIndex = (pointSegment.reader()).getPointValues(fieldInfo.name);
-                            indicesByTo.get(fromTo.getValue().ord)[fromTo.getKey().ord] = pointIndex;
-                        } // else 1D tombstone
-                        // anyway, wipe since it's not absent
-                        absentPointsByTo.get(fromTo.getValue().ord)[fromTo.getKey().ord] = null;
-                    } else {
-                        // TODO removed segments
-                    }
+                            indicesByTo.get(toOrd)[fromOrd] = pointSegment.reader().getPointValues(fieldInfo.name);
+                        }// else tombstone
+                        absentPointsByTo.get(toOrd)[fromOrd] = null; // Clear absent marker
+                    }//TODO else drop redundant
                 }
             }
-            // we have indices, thombstones and nulls for absents
         } finally {
-            pointIndexManager.release(pointIndexSegments);
-            pointIndexSegments = null;
+            pointIndexManager.release(searcher);
         }
-        SingleToSegProcessor[] toSegProcessors = new SingleToSegProcessor[indicesByTo.size()];
-        for (int toSegOrd = 0; toSegOrd < indicesByTo.size(); toSegOrd++) {
-            toSegProcessors[toSegOrd] = new SingleToSegProcessor(fromField, toField, pointIndexManager, fromLeavesCached, toSegments.get(toSegOrd),
-                    indicesByTo.get(toSegOrd),
-                    absentPointsByTo.get(toSegOrd));
+
+        // 5. Build processors for each to-segment
+        SingleToSegProcessor[] processors = new SingleToSegProcessor[toSize];
+        for (int toOrd = 0; toOrd < toSize; toOrd++) {
+            processors[toOrd] = new SingleToSegProcessor(
+                    fromField, toField, pointIndexManager, fromLeavesCached, toSegments.get(toOrd),
+                    indicesByTo.get(toOrd), absentPointsByTo.get(toOrd)
+            );
         }
-//        List<SingleToSegProcessor> toSegProcessors = indicesByTo.stream().map(pointsByFrom-> new SingleToSegProcessor(pointsByFrom)).toList();
-        return toSegProcessors;
+        return processors;
     }
 
     static class InnerJoinVisitor implements PointValues.IntersectVisitor, BooleanSupplier {

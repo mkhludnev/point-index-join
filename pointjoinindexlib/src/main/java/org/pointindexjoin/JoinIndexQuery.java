@@ -15,7 +15,7 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.FixedBitSet;
 
 import java.io.IOException;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -80,9 +80,10 @@ public class JoinIndexQuery extends Query {
         return 0;
     }
 
+    // TODO non-null elems collection
     List<JoinIndexHelper.FromContextCache> cacheFromQuery() throws IOException {
         Weight fromQueryWeight = fromSearcher.createWeight(fromQuery, ScoreMode.COMPLETE_NO_SCORES, 1f);
-        JoinIndexHelper.FromContextCache[] fromContextCaches = new JoinIndexHelper.FromContextCache[fromSearcher.getIndexReader().leaves().size()];
+        List<JoinIndexHelper.FromContextCache> fromContextCaches = new ArrayList<>(fromSearcher.getIndexReader().leaves().size());
 
         List<LeafReaderContext> leaves = fromSearcher.getIndexReader().leaves();
         for (int i = 0; i < leaves.size(); i++) {
@@ -94,11 +95,11 @@ public class JoinIndexQuery extends Query {
                     FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());
                     // TODO may it be already cached in anywhere?
                     iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
-                    fromContextCaches[i] = new JoinIndexHelper.FromContextCache(fromLeaf, fromBits);
+                    fromContextCaches.add(new JoinIndexHelper.FromContextCache(fromLeaf, fromBits));
                 }
             }
         }
-        return Arrays.asList(fromContextCaches);
+        return fromContextCaches;
     }
 
 }
