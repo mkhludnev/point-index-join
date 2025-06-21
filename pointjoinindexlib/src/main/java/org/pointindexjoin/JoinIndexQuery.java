@@ -17,15 +17,17 @@ import org.apache.lucene.util.FixedBitSet;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-public class JoinIndexQuery extends Query {
+public class JoinIndexQuery extends Query implements  AutoCloseable{
     final IndexSearcher fromSearcher;
     final String fromField;
     final String toField;
     final SearcherManager indexManager;
     final Supplier<IndexWriter> writerFactory;
     private final Query fromQuery;
+    protected List<AutoCloseable> closeables = new ArrayList<>();
 
     public JoinIndexQuery(IndexSearcher fromSearcher, Query fromQuery, String fromField, String toField, SearcherManager indexManager, Supplier<IndexWriter> writerFactory) {
         this.fromSearcher = fromSearcher;
@@ -46,6 +48,9 @@ public class JoinIndexQuery extends Query {
         }
         if (rewrittenFrom != toRewriteFrom) {
             return new JoinIndexQuery(fromSearcher, rewrittenFrom, fromField, toField, indexManager, writerFactory) {
+                {
+                    this.closeables = JoinIndexQuery.this.closeables;
+                }
                 @Override
                 public Query rewrite(IndexSearcher indexSearcher) throws IOException {
                     return this;
@@ -57,7 +62,7 @@ public class JoinIndexQuery extends Query {
 
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
-        return new JoinIndexWeight(searcher, this, scoreMode);
+        return new JoinIndexWeight(searcher, this, scoreMode, JoinIndexQuery.this.closeables::add);
     }
 
     @Override
@@ -68,6 +73,17 @@ public class JoinIndexQuery extends Query {
     @Override
     public void visit(QueryVisitor queryVisitor) {
 
+    }
+
+    @Override
+    public void close() throws Exception {
+        for (AutoCloseable clzbls:this.closeables) {
+            try {
+                clzbls.close();
+            } catch (Exception e) {
+                //TODO log.fatal
+            }
+        }
     }
 
     @Override

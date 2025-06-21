@@ -32,9 +32,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
-//@Seed("DF4F4E6D512BBFCB")
+@Seed("D9428435FB4E78D2")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
@@ -46,30 +47,42 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
 
     private static void indexChild(IndexWriter fromw, String fk, String id) throws IOException {
         Document child1 = new Document();
-        child1.add(new SortedSetDocValuesField("fk", new BytesRef(fk)));
+        if (fk!=null) {
+            child1.add(new SortedSetDocValuesField("fk", new BytesRef(fk)));
+        }
         child1.add(new StringField("id", id, Field.Store.YES));
         fromw.addDocument(child1);
     }
 
-    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap, IndexSearcher fromSearcher, SearcherManager indexManager, Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws IOException {
-        Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).collect(Collectors.toSet());
+    // [132_17, 996_82, 852_99, 251_16, 985_87, 597_77, 557_38, 209_36, 42_13, 127_29] should join to
+    // [597, 852, 985, 127, 557, 209, 251, 42] but actually
+    // 42,127,209,251,557,597,852,985,996
+    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap, IndexSearcher fromSearcher, SearcherManager indexManager, Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws Exception {
+        Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
+                info("children:" + selectedChildIds);
+        Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).filter(p->p!=null).collect(Collectors.toSet());
+        Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
+                info("parents expected:" + parentsExpected);
         String removeParent = null;
         if (!parentsExpected.isEmpty() && random().nextBoolean()) {
             Iterator<String> iterator = parentsExpected.iterator();
             removeParent = iterator.next();
             iterator.remove();
+            Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
+                    info("removed parent:"+removeParent+". Parents expected "+parentsExpected);
         }
-        Query join = new JoinIndexQuery(fromSearcher,
+        JoinIndexQuery joinIndexQuery = new JoinIndexQuery(fromSearcher,
                 new TermInSetQuery("id", selectedChildIds.stream().map(BytesRef::new).toList()),
                 "fk", "id", indexManager,
                 indexWriterSupplier);
+        Query join = joinIndexQuery;
         if (removeParent != null) {
             join = new BooleanQuery.Builder().add(join, BooleanClause.Occur.MUST)
                     .add(new TermQuery(new Term("id", removeParent)), BooleanClause.Occur.MUST_NOT).build();
         }
         TopDocs search = toSearcher.search(join, selectedChildIds.size());
         assertEquals(
-                selectedChildIds + " yields " + parentsExpected + " but " +
+                selectedChildIds + " should join to " + parentsExpected + " but actually " +
                         Arrays.stream(search.scoreDocs, 0, (int) search.totalHits.value())
                                 .map(sd -> {
                                     try {
@@ -85,10 +98,11 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             assertTrue(document.get("id"), parentsExpected.remove(document.get("id")));
         }
         assertTrue(parentsExpected.isEmpty());
+        joinIndexQuery.close();
     }
 
-    //@Seed("74B553788EF739E5")
-    public void testBasic() throws IOException {
+    @Seed("72B899202492FEFC")
+    public void testBasic() throws Exception {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
 
@@ -102,6 +116,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
 
         // Map to track child ID to parent ID
         Map<String, String> childToParentMap = new HashMap<>();
+        int orphan=0;
 
         for (int parentId = 1; parentId <= 1000; parentId++) {
             String parentIdStr = String.valueOf(parentId);
@@ -116,8 +131,13 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                 indexChild(fromw, parentIdStr, childId);
                 childToParentMap.put(childId, parentIdStr);
                 if (rarely()) {
+                    indexChild(fromw, null, childId=("orphan_"+(orphan++)));
+                    childToParentMap.put(childId, null);
+                }
+                if (rarely()) {
                     fromw.commit();
                 }
+
             }
         }
 
@@ -152,6 +172,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);
             assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
+            Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).info("passed " + pass);
         }
 
         indexManager.close();
@@ -159,6 +180,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         fromSearcher.getIndexReader().close();
         dir.close();
         fromDir.close();
+        indexManager.close();
         joinindexdir.close();
     }
 }

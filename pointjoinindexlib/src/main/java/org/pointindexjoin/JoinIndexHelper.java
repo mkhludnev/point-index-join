@@ -180,7 +180,7 @@ public class JoinIndexHelper {
         for (var entry : pointIndexNameToPair.entrySet()) {
             int fromOrd = entry.getValue().getKey().ord;
             int toOrd = entry.getValue().getValue().ord;
-            absentPointsByTo.get(toOrd)[fromOrd] = entry.getKey();
+            absentPointsByTo.get(toOrd )[fromOrd] = entry.getKey();
         }
 
         // 4. Fill found indices, clear absent markers
@@ -214,6 +214,8 @@ public class JoinIndexHelper {
         }
         return processors;
     }
+
+
 
     static class InnerJoinVisitor implements PointValues.IntersectVisitor, BooleanSupplier {
         private final FixedBitSet fromBits;
