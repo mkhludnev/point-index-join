@@ -57,7 +57,9 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
     // [132_17, 996_82, 852_99, 251_16, 985_87, 597_77, 557_38, 209_36, 42_13, 127_29] should join to
     // [597, 852, 985, 127, 557, 209, 251, 42] but actually
     // 42,127,209,251,557,597,852,985,996
-    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap, IndexSearcher fromSearcher, SearcherManager indexManager, Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws Exception {
+    private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap,
+                                   IndexSearcher fromSearcher, SearcherManager indexManager,
+                                   Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws Exception {
         Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
                 info("children:" + selectedChildIds);
         Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).filter(p->p!=null).collect(Collectors.toSet());
@@ -117,7 +119,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         // Map to track child ID to parent ID
         Map<String, String> childToParentMap = new HashMap<>();
         int orphan=0;
-
+        String orphanId=null;
         for (int parentId = 1; parentId <= 1000; parentId++) {
             String parentIdStr = String.valueOf(parentId);
             indexParent(parentIdStr, w);
@@ -131,8 +133,8 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                 indexChild(fromw, parentIdStr, childId);
                 childToParentMap.put(childId, parentIdStr);
                 if (rarely()) {
-                    indexChild(fromw, null, childId=("orphan_"+(orphan++)));
-                    childToParentMap.put(childId, null);
+                    indexChild(fromw, null, orphanId=("orphan_"+(orphan++)));
+                    childToParentMap.put(orphanId, null);
                 }
                 if (rarely()) {
                     fromw.commit();
@@ -169,9 +171,12 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         //assertJoin(Arrays.asList("635_39"), childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
         for (int pass = 0; pass < 10; pass++) {
             List<String> childIds = new ArrayList<>(childToParentMap.keySet());
+            if (orphanId!=null) {
+                childIds.add(orphanId);
+            }
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);
-            assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
+            assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier,toSearcher);
             Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).info("passed " + pass);
         }
 

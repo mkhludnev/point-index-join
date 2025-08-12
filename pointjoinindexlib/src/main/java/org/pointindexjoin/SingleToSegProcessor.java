@@ -108,7 +108,7 @@ class SingleToSegProcessor //implements AutoCloseable
 
         EagerJoiner sink = new EagerJoiner(toBits);
 
-        walkAllFromSegIncSegs(writerFactory, sink);
+        walkAllFromSegIncSegs(writerFactory, sink, true, true);
 
         if (sink.hasHits()) {
             return new BitSetScorerSupplier(toBits);
@@ -117,19 +117,42 @@ class SingleToSegProcessor //implements AutoCloseable
         }
     }
 
-    private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink) throws IOException {
+    public void createExactBitsFromAbsentSegs(Supplier<IndexWriter> writerFactory) throws IOException {
+        // todo only absents
+        walkAllFromSegIncSegs(writerFactory, new PointIndexConsumer() {
+            @Override
+            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues idx) throws IOException {
+                // do nothing
+            }
 
-        for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
-            if (fromLeaf != null && pointValuesByFromSegOrd[fromLeaf.lrc.ord] != null) {
-                sink.onIndexPage(fromLeaf, pointValuesByFromSegOrd[fromLeaf.lrc.ord]);
+            @Override
+            public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx) {
+
+                return null;
+            }
+
+            @Override
+            public boolean hasHits() {
+                return false;
+            }
+        }, true, true);
+    }
+
+    private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink, boolean walkExisting, boolean walkAbsentAndIndex) throws IOException {
+
+        if(walkExisting) {
+            for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
+                if (fromLeaf != null && pointValuesByFromSegOrd[fromLeaf.lrc.ord] != null) {
+                    sink.onIndexPage(fromLeaf, pointValuesByFromSegOrd[fromLeaf.lrc.ord]);
+                }
             }
         }
-        if (firstAbsentOrd >= 0) {
+        if (walkAbsentAndIndex && firstAbsentOrd >= 0) {
             for (JoinIndexHelper.FromContextCache fromLeaf : //firstAbsentOrd >= 0 ?
                     fromLeaves
                 //        .subList(firstAbsentOrd, fromLeaves.size()) : List.<JoinIndexHelper.FromContextCache>of()
             ) {
-                if (fromLeaf.lrc.ord < firstAbsentOrd) {
+                if (fromLeaf.lrc.ord < firstAbsentOrd) {//TODO skip by []
                     continue;
                 }
                 if (absentIndexNamesByFromOrd[fromLeaf.lrc.ord] != null) {
@@ -149,7 +172,7 @@ class SingleToSegProcessor //implements AutoCloseable
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
         PointIndexConsumer sink = new ApproxIndexConsumer(toApprox);
 
-        walkAllFromSegIncSegs(null, sink);
+        walkAllFromSegIncSegs(null, sink, true, true);
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
         if (sink.hasHits()) {
             return new RefineTwoPhaseSupplier(toApprox);

@@ -71,6 +71,7 @@ class JoinIndexWeight extends Weight {
         }
     }
 
+    //TODO simplify to single toSegment
     SingleToSegProcessor[] extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, LeafReaderContext toSegment, String fromField, String toField, List<JoinIndexHelper.FromContextCache> fromLeavesCached) throws IOException {
 
         // 1. Build mapping from point index name to (fromLeaf, toLeaf) pair
