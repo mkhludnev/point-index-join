@@ -35,7 +35,7 @@ import java.util.function.Supplier;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
-@Seed("D9428435FB4E78D2")
+//@Seed("D9428435FB4E78D2")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void indexParent(String id, IndexWriter w) throws IOException {
@@ -103,7 +103,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         joinIndexQuery.close();
     }
 
-    @Seed("72B899202492FEFC")
+    //@Seed("72B899202492FEFC")
     public void testBasic() throws Exception {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();

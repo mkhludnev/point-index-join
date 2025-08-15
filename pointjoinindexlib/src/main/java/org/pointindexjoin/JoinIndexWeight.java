@@ -64,11 +64,12 @@ class JoinIndexWeight extends Weight {
                 fromLeaves
         );
         SingleToSegProcessor joinConsumer = toSegments[0];
-        if (joinConsumer.isFullyIndexed()) {
-            return joinConsumer.createLazy();
-        } else {
-            return joinConsumer.createEager(joinIndexQuery.writerFactory);
-        }
+        return joinConsumer.createExactBitsFromAbsentSegs(joinIndexQuery.writerFactory);
+         // if (joinConsumer.isFullyIndexed()) {
+         //     return joinConsumer.createLazy();
+         // } else {
+         //     return joinConsumer.createEager(joinIndexQuery.writerFactory);
+         // }
     }
 
     //TODO simplify to single toSegment

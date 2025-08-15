@@ -99,7 +99,7 @@ class SingleToSegProcessor //implements AutoCloseable
 //        pointIndexSearcher = null;
 //    }
 
-    public boolean isFullyIndexed() {
+    /*public boolean isFullyIndexed() {
         return firstAbsentOrd < 0;
     }
 
@@ -116,26 +116,36 @@ class SingleToSegProcessor //implements AutoCloseable
             return null;
         }
     }
-
-    public void createExactBitsFromAbsentSegs(Supplier<IndexWriter> writerFactory) throws IOException {
+*/
+    public ScorerSupplier createExactBitsFromAbsentSegs(Supplier<IndexWriter> writerFactory) throws IOException {
         // todo only absents
-        walkAllFromSegIncSegs(writerFactory, new PointIndexConsumer() {
+        FixedBitSet matchingTo = new FixedBitSet(toContext.reader().maxDoc());
+        EagerJoiner exactlyMatchingSink = new EagerJoiner(matchingTo) {
             @Override
-            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues idx) throws IOException {
-                // do nothing
+            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
+                throw new UnsupportedOperationException();
             }
+        };
+        walkAllFromSegIncSegs(writerFactory, exactlyMatchingSink, false, true);
 
-            @Override
-            public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx) {
+        FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
+        PointIndexConsumer approxSink = new ApproxIndexConsumer(toApprox);
 
+        walkAllFromSegIncSegs(null, approxSink, true, false);
+        //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
+        if (approxSink.hasHits()) {
+            if (exactlyMatchingSink.hasHits()) {
+                return new RefineTwoPhaseSupplier(toApprox, matchingTo);// accept exacts
+            } else { // only lazy
+                return new RefineTwoPhaseSupplier(toApprox);
+            }
+        } else {
+            if (exactlyMatchingSink.hasHits()) {
+                return new BitSetScorerSupplier(matchingTo);
+            } else {
                 return null;
             }
-
-            @Override
-            public boolean hasHits() {
-                return false;
-            }
-        }, true, true);
+        }
     }
 
     private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink, boolean walkExisting, boolean walkAbsentAndIndex) throws IOException {
@@ -167,33 +177,39 @@ class SingleToSegProcessor //implements AutoCloseable
         }
     }
 
-    public ScorerSupplier createLazy(//SingleToSegSupplier debugBro
+    /*public ScorerSupplier createLazy(//SingleToSegSupplier debugBro
     ) throws IOException {
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
         PointIndexConsumer sink = new ApproxIndexConsumer(toApprox);
 
-        walkAllFromSegIncSegs(null, sink, true, true);
+        walkAllFromSegIncSegs(null, sink, true, false);
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
         if (sink.hasHits()) {
             return new RefineTwoPhaseSupplier(toApprox);
         } else {
             return null;
         }
-    }
+    }*/
 
-    private int refine(FixedBitSet toApprox, int toDocID) throws IOException {
+    private int refine(FixedBitSet toApprox, int startingAtToDoc, FixedBitSet matchingForSure) throws IOException {
         RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
-                toDocID);
-        // TODO this is a little bit awkward, it reads PointValues from closed searcher, how could it's possible?
+                startingAtToDoc);
         for (JoinIndexHelper.FromContextCache cacheFrom : fromLeaves) {
             refiner.fromCtxLeaf = cacheFrom;
-            this.pointValuesByFromSegOrd[cacheFrom.lrc.ord].intersect(refiner);
+            if(this.pointValuesByFromSegOrd[cacheFrom.lrc.ord]!=null) {
+                this.pointValuesByFromSegOrd[cacheFrom.lrc.ord].intersect(refiner);
+            }//else this from leaf has hits, but they were handled by just written idx-seg
         }
         //assert refiner.minUpperSeen < Integer.MAX_VALUE;
-        int lenAvailable = toDocID + refiner.eagerFetch < toApprox.length() ?
-                refiner.eagerFetch : toApprox.length() - toDocID;
-        FixedBitSet.andRange(refiner.toRefined, 0, toApprox, toDocID, lenAvailable);
-        return toDocID + lenAvailable;
+        if (matchingForSure!=null) {
+            FixedBitSet.orRange(matchingForSure,startingAtToDoc, refiner.toRefined, 0,
+                    startingAtToDoc + refiner.eagerFetch < matchingForSure.length()?
+            refiner.eagerFetch : matchingForSure.length() - startingAtToDoc);
+        }
+        int lenAvailable = startingAtToDoc + refiner.eagerFetch < toApprox.length() ?
+                refiner.eagerFetch : toApprox.length() - startingAtToDoc;
+        FixedBitSet.andRange(refiner.toRefined, 0, toApprox, startingAtToDoc, lenAvailable);
+        return startingAtToDoc + lenAvailable;
     }
 
     interface LazyVisitor extends PointValues.IntersectVisitor {
@@ -337,7 +353,6 @@ class SingleToSegProcessor //implements AutoCloseable
 
         @Override
         public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
-            // TODO track emptiness
             JoinIndexHelper.InnerJoinVisitor toBitsDumper = new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
                     fromCtx.lowerDocId, fromCtx.upperDocId);
             indexPoints.intersect(toBitsDumper);
@@ -394,11 +409,21 @@ class SingleToSegProcessor //implements AutoCloseable
     private class RefineTwoPhaseSupplier extends ScorerSupplier {
         private final FixedBitSet toApprox;
         private final int cty;
+        private final FixedBitSet matchingForSure;
         DocIdSetIterator approximation;
 
         public RefineTwoPhaseSupplier(FixedBitSet toApprox) {
             this.toApprox = toApprox;
             this.cty = toApprox.cardinality();
+            approximation = new BitSetIterator(toApprox, cty);
+            matchingForSure = null;
+        }
+
+        public RefineTwoPhaseSupplier(FixedBitSet toApprox, FixedBitSet matchingTo) {
+            this.toApprox = toApprox;
+            this.cty = toApprox.cardinality();
+            this.toApprox.or(matchingTo);
+            this.matchingForSure = matchingTo;
             approximation = new BitSetIterator(toApprox, cty);
         }
 
@@ -416,10 +441,15 @@ class SingleToSegProcessor //implements AutoCloseable
                         @Override
                         public boolean matches() throws IOException {
                             int docID = approximation().docID();
+                            if (matchingForSure!=null) {
+                                if (matchingForSure.get(docID)){
+                                    return true;
+                                }
+                            }
                             //int debugDoc = debugDisi.advance(docID);
                             if (docID >= refinedUpTo) {
                                 assert toApprox.get(docID);
-                                refinedUpTo = refine(toApprox, docID);
+                                refinedUpTo = refine(toApprox, docID, matchingForSure);
                                 assert refinedUpTo != Integer.MAX_VALUE;
                             }
                             assert docID <= refinedUpTo;

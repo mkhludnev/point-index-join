@@ -14,7 +14,7 @@ repositories {
 
 dependencies {
     // Lucene Core
-    implementation("org.apache.lucene:lucene-core:10.2.0")
+    implementation("org.apache.lucene:lucene-core:10.2.2")
 
 
     // Test framework
