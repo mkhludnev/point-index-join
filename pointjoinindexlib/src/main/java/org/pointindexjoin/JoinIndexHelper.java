@@ -156,7 +156,7 @@ public class JoinIndexHelper {
         Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
-    static SingleToSegProcessor[] extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, List<LeafReaderContext> toSegments, String fromField, String toField, List<FromContextCache> fromLeavesCached) throws IOException {
+    /*static SingleToSegProcessor[] extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, List<LeafReaderContext> toSegments, String fromField, String toField, List<FromContextCache> fromLeavesCached) throws IOException {
 
         // 1. Build mapping from point index name to (fromLeaf, toLeaf) pair
         Map<String, Map.Entry<LeafReaderContext, LeafReaderContext>> pointIndexNameToPair = new HashMap<>();
@@ -213,7 +213,7 @@ public class JoinIndexHelper {
             );
         }
         return processors;
-    }
+    }*/
 
 
 

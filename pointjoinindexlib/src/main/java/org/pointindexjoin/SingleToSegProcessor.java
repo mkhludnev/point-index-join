@@ -5,7 +5,6 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.search.ConstantScoreScorer;
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
@@ -16,6 +15,7 @@ import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntBinaryOperator;
@@ -25,30 +25,38 @@ class SingleToSegProcessor //implements AutoCloseable
 {
 
     final LeafReaderContext toContext;
-    //    final Map<String, JoinIndexHelper.FromContextCache> indexPointsNames;
     final private SearcherManager indexManager;
     private final List<JoinIndexHelper.FromContextCache> fromLeaves;
-    private final PointValues[] pointValuesByFromSegOrd;
-    private final String[] absentIndexNamesByFromOrd;
-    private final int firstAbsentOrd;
+    private final List<FromSegIndexData> pointValuesByFromSegOrd;
+    private final Collection<FromSegIndexData> absentIndexNamesByFromOrd;
+    //private final int firstAbsentOrd;
     private final String toField;
     private final String fromField;
-    //    final private Map<String, PointValues> pointIndices;
-//    final private Set<String> absent;
-    private IndexSearcher pointIndexSearcher;
+
+    static class FromSegIndexData {
+        String indexValuesName;
+        LeafReaderContext fromCxt;
+        PointValues joinValues;
+        boolean needsToIndex = true;
+
+        public FromSegIndexData(String pointIndexName, LeafReaderContext fromLeaf) {
+            this.indexValuesName = pointIndexName;
+            fromCxt = fromLeaf;
+        }
+    }
 
     public SingleToSegProcessor(String fromField1, String toField1,
                                 SearcherManager indexManager,
                                 List<JoinIndexHelper.FromContextCache> fromLeaves1,
                                 LeafReaderContext toContext,
-                                PointValues[] pointValuesByFromSegOrd,
-                                String[] absentIndexNamesByFromOrd) throws IOException {
+                                List<FromSegIndexData> toProcessJoin,
+                                Collection<FromSegIndexData> absentJoinFields) throws IOException {
         this.toContext = toContext;
         this.indexManager = indexManager;
         this.fromLeaves = fromLeaves1;
-        this.pointValuesByFromSegOrd = pointValuesByFromSegOrd;
-        this.absentIndexNamesByFromOrd = absentIndexNamesByFromOrd;
-        this.firstAbsentOrd = indexOfNonNullOrNeg(absentIndexNamesByFromOrd);
+        this.pointValuesByFromSegOrd = toProcessJoin;
+        this.absentIndexNamesByFromOrd = absentJoinFields;
+        //this.firstAbsentOrd = indexOfNonNullOrNeg(absentJoinFields);
         toField = toField1;
         fromField = fromField1;
     }
@@ -151,14 +159,51 @@ class SingleToSegProcessor //implements AutoCloseable
     private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink, boolean walkExisting, boolean walkAbsentAndIndex) throws IOException {
 
         if(walkExisting) {
-            for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
+            /*for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
                 if (fromLeaf != null && pointValuesByFromSegOrd[fromLeaf.lrc.ord] != null) {
                     sink.onIndexPage(fromLeaf, pointValuesByFromSegOrd[fromLeaf.lrc.ord]);
                 }
+            }*/
+
+            for (FromSegIndexData task : pointValuesByFromSegOrd) {
+                JoinIndexHelper.FromContextCache fromContextCache = null;
+                // TODO optimize
+                for (JoinIndexHelper.FromContextCache cache:fromLeaves) {
+                    if (cache.lrc.ord==task.fromCxt.ord) {
+                        fromContextCache = cache;
+                        break;
+                    }
+                }
+                //JoinIndexHelper.FromContextCache fromContextCache = fromLeaves.get(task.fromCxt.ord);
+                if (fromContextCache!=null) {
+                    sink.onIndexPage(fromContextCache,// hope for strict by ord ordering
+                            task.joinValues);
+                }
             }
         }
-        if (walkAbsentAndIndex && firstAbsentOrd >= 0) {
-            for (JoinIndexHelper.FromContextCache fromLeaf : //firstAbsentOrd >= 0 ?
+        if (walkAbsentAndIndex //&& firstAbsentOrd >= 0
+        ) {
+            for (FromSegIndexData task : absentIndexNamesByFromOrd) {
+
+                JoinIndexHelper.FromContextCache fromContextCache = null;
+                // TODO optimize
+                for (JoinIndexHelper.FromContextCache cache:fromLeaves) {
+                    if (cache.lrc.ord==task.fromCxt.ord) {
+                        fromContextCache = cache;
+                        break;
+                    }
+                }
+                if (fromContextCache != null) {
+                    JoinIndexHelper.indexJoinSegments(
+                            this.indexManager, writerFactory,
+                            task.fromCxt.reader().getSortedSetDocValues(fromField),
+                            toContext.reader().getSortedSetDocValues(toField),
+                            task.indexValuesName,
+                            sink.createTupleConsumer(fromContextCache));
+                }
+            }
+
+           /* for (JoinIndexHelper.FromContextCache fromLeaf : //firstAbsentOrd >= 0 ?
                     fromLeaves
                 //        .subList(firstAbsentOrd, fromLeaves.size()) : List.<JoinIndexHelper.FromContextCache>of()
             ) {
@@ -173,7 +218,7 @@ class SingleToSegProcessor //implements AutoCloseable
                             absentIndexNamesByFromOrd[fromLeaf.lrc.ord],
                             sink.createTupleConsumer(fromLeaf));
                 }
-            }
+            }*/
         }
     }
 
@@ -194,12 +239,29 @@ class SingleToSegProcessor //implements AutoCloseable
     private int refine(FixedBitSet toApprox, int startingAtToDoc, FixedBitSet matchingForSure) throws IOException {
         RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
                 startingAtToDoc);
-        for (JoinIndexHelper.FromContextCache cacheFrom : fromLeaves) {
+
+        for (FromSegIndexData task : pointValuesByFromSegOrd) {
+            //JoinIndexHelper.FromContextCache fromContextCache = fromLeaves.get(task.fromCxt.ord);
+            JoinIndexHelper.FromContextCache fromContextCache = null;
+            // TODO optimize
+            for (JoinIndexHelper.FromContextCache cache:fromLeaves) {
+                if (cache.lrc.ord==task.fromCxt.ord) {
+                    fromContextCache = cache;
+                    break;
+                }
+            }
+            if (fromContextCache!=null) {
+                refiner.fromCtxLeaf = fromContextCache;
+                task.joinValues.intersect(refiner);
+            }
+        }
+
+        /*for (JoinIndexHelper.FromContextCache cacheFrom : fromLeaves) {
             refiner.fromCtxLeaf = cacheFrom;
             if(this.pointValuesByFromSegOrd[cacheFrom.lrc.ord]!=null) {
                 this.pointValuesByFromSegOrd[cacheFrom.lrc.ord].intersect(refiner);
             }//else this from leaf has hits, but they were handled by just written idx-seg
-        }
+        }*/
         //assert refiner.minUpperSeen < Integer.MAX_VALUE;
         if (matchingForSure!=null) {
             FixedBitSet.orRange(matchingForSure,startingAtToDoc, refiner.toRefined, 0,

@@ -38,6 +38,9 @@ import java.util.stream.Collectors;
 //@Seed("D9428435FB4E78D2")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
+
+    public static final Logger LOGGER = Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName());
+
     private static void indexParent(String id, IndexWriter w) throws IOException {
         Document parent1 = new Document();
         parent1.add(new SortedSetDocValuesField("id", new BytesRef(id)));
@@ -60,17 +63,17 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
     private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap,
                                    IndexSearcher fromSearcher, SearcherManager indexManager,
                                    Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws Exception {
-        Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
+        LOGGER.
                 info("children:" + selectedChildIds);
         Set<String> parentsExpected = selectedChildIds.stream().map(childToParentMap::get).filter(p->p!=null).collect(Collectors.toSet());
-        Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
+        LOGGER.
                 info("parents expected:" + parentsExpected);
         String removeParent = null;
         if (!parentsExpected.isEmpty() && random().nextBoolean()) {
             Iterator<String> iterator = parentsExpected.iterator();
             removeParent = iterator.next();
             iterator.remove();
-            Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).
+            LOGGER.
                     info("removed parent:"+removeParent+". Parents expected "+parentsExpected);
         }
         JoinIndexQuery joinIndexQuery = new JoinIndexQuery(fromSearcher,
@@ -177,7 +180,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);
             assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier,toSearcher);
-            Logger.getLogger(TestBasicPointIndexJoin.class.getCanonicalName()).info("passed " + pass);
+            LOGGER.info("passed " + pass);
         }
 
         indexManager.close();
