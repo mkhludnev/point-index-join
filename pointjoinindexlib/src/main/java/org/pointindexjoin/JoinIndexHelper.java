@@ -264,6 +264,9 @@ public class JoinIndexHelper {
         }
     }
 
+    /**
+     * used across to segments, potentially might be reused acroos repoeating from queries
+     * */
     static class FromContextCache {
         final LeafReaderContext lrc;
         final int lowerDocId;

@@ -3,7 +3,6 @@ package org.pointindexjoin;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.PointValues;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.ScoreMode;
@@ -13,8 +12,6 @@ import org.apache.lucene.search.Weight;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,15 +33,7 @@ class JoinIndexWeight extends Weight {
         this.joinIndexQuery = joinIndexQuery;
         // this.scoreMode = scoreMode;
         this.closeHook = consumer;
-        this.fromLeaves = joinIndexQuery.cacheFromQuery(); // TODO defer it even further
-//        this.toSegments = JoinIndexHelper.extractIndices(joinIndexQuery.fromSearcher.getIndexReader().leaves(),
-//                joinIndexQuery.indexManager,
-//                toSearcher.getIndexReader().leaves(),
-//                joinIndexQuery.fromField,
-//                joinIndexQuery.toField,
-//                fromLeaves
-//        );
-        //this.toSegments = toSegProcss.toArray(new SingleToSegProcessor[]{});
+        this.fromLeaves = joinIndexQuery.cacheFromQuery();
     }
 
     @Override
@@ -57,91 +46,56 @@ class JoinIndexWeight extends Weight {
         if (fromLeaves.isEmpty()) {
             return null;
         }
-        SingleToSegProcessor toSegments = this.extractIndices(joinIndexQuery.fromSearcher.getIndexReader().leaves(),
+        SingleToSegProcessor toSegments = this.extractIndices(
                 joinIndexQuery.indexManager,
                 toContext,
                 joinIndexQuery.fromField,
                 joinIndexQuery.toField,
                 fromLeaves
         );
-        SingleToSegProcessor joinConsumer = toSegments;//[0];
-        return joinConsumer.createExactBitsFromAbsentSegs(joinIndexQuery.writerFactory);
-         // if (joinConsumer.isFullyIndexed()) {
-         //     return joinConsumer.createLazy();
-         // } else {
-         //     return joinConsumer.createEager(joinIndexQuery.writerFactory);
-         // }
+        SingleToSegProcessor joinConsumer = toSegments;
+        return joinConsumer.createScorerSuplier(joinIndexQuery.writerFactory);
     }
 
     //TODO simplify to single toSegment
-    SingleToSegProcessor extractIndices(List<LeafReaderContext> fromSegments, SearcherManager pointIndexManager, LeafReaderContext toSegment, String fromField, String toField, List<JoinIndexHelper.FromContextCache> fromLeavesCached) throws IOException {
+    SingleToSegProcessor extractIndices(SearcherManager pointIndexManager, LeafReaderContext toSegment, String fromField, String toField, List<JoinIndexHelper.FromContextCache> fromLeavesCached) throws IOException {
 
-        // 1. Build mapping from point index name to (fromLeaf, toLeaf) pair
-        Map<String, Map.Entry<LeafReaderContext, LeafReaderContext>> pointIndexNameToPair = new HashMap<>();
-        Map<String, SingleToSegProcessor.FromSegIndexData> dataByJoinIndexByFieldName = new LinkedHashMap<>(fromSegments.size());
+        Map<String, SingleToSegProcessor.FromSegIndexData> needsToBeIndexed = new LinkedHashMap<>(fromLeavesCached.size());
         String toSegmentName = getSegmentName(toSegment);
         //List<SingleToSegProcessor.FromSegIndexData> fromSegData = new ArrayList<>(fromSegments.size());
-        for (LeafReaderContext fromLeaf : fromSegments) {
-            String fromSegmentName = getSegmentName(fromLeaf);
+        for (JoinIndexHelper.FromContextCache fromLeaf : fromLeavesCached) {
+            String fromSegmentName = getSegmentName(fromLeaf.lrc);
             String pointIndexName = getPointIndexFieldName(fromSegmentName, toSegmentName);
-            pointIndexNameToPair.put(pointIndexName, Map.entry(fromLeaf, toSegment));
-            SingleToSegProcessor.FromSegIndexData fromSegIndexData = new SingleToSegProcessor.FromSegIndexData(pointIndexName, fromLeaf);
-            //fromSegData.add(fromSegIndexData);
-            dataByJoinIndexByFieldName.put(pointIndexName, fromSegIndexData);
+            SingleToSegProcessor.FromSegIndexData fromSegIndexData = new SingleToSegProcessor.FromSegIndexData(pointIndexName,
+                    fromLeaf);
+            needsToBeIndexed.put(pointIndexName, fromSegIndexData);
         }
 
-        // 2. Prepare result containers
-        int fromSize = fromSegments.size();//toSegments.size();
-        //for (int i = 0; i < toSize; i++) {
-        PointValues[] indicesByTo = new PointValues[fromSize];
-        String[] absentPointsByTo = new String[fromSize];
-        //}
-
-        // 3. Mark all as absent initially
-        for (var entry : pointIndexNameToPair.entrySet()) {
-            int fromOrd = entry.getValue().getKey().ord;
-            //int toOrd = 0;// entry.getValue().getValue().ord;
-            absentPointsByTo[fromOrd] = entry.getKey();
-        }
-
-        List<SingleToSegProcessor.FromSegIndexData> toProcess = new ArrayList<>(fromSize);
-        // 4. Fill found indices, clear absent markers
+        List<SingleToSegProcessor.FromSegIndexData> existingIndices = new ArrayList<>(fromLeavesCached.size());
         IndexSearcher searcher = pointIndexManager.acquire();
+        // TODO, nice to have idxSeg[fieldName]
         for (LeafReaderContext pointSegment : searcher.getIndexReader().leaves()) {
             FieldInfos fieldInfos = pointSegment.reader().getFieldInfos();
             for (FieldInfo fieldInfo : fieldInfos) {
-                SingleToSegProcessor.FromSegIndexData fromSegIndexData = dataByJoinIndexByFieldName.remove(fieldInfo.name);
-                Map.Entry<LeafReaderContext, LeafReaderContext> pair = pointIndexNameToPair.get(fieldInfo.name);
-                if (pair != null) {
-                    int fromOrd = pair.getKey().ord;
-                    //int toOrd = 0;//pair.getValue().ord;
+                SingleToSegProcessor.FromSegIndexData fromSegIndexData = needsToBeIndexed.remove(fieldInfo.name);
+                if (fromSegIndexData != null) {
                     if (fieldInfo.getPointIndexDimensionCount() == 2) {
-                        indicesByTo//.get(toOrd)
-                                [fromOrd] = pointSegment.reader().getPointValues(fieldInfo.name);
                         fromSegIndexData.joinValues = pointSegment.reader().getPointValues(fieldInfo.name);
-                        toProcess.add(fromSegIndexData);
-                    }// else tombstone
-                    //dataByJoinIndexByFieldName.remove(fieldInfo.name);
-                    absentPointsByTo//.get(toOrd)
-                            [fromOrd] = null; // Clear absent marker
-
+                        existingIndices.add(fromSegIndexData);
+                    }// else tombstone, we don't care. this from query doesn't hit that seg.
                 }//TODO else drop redundant
             }
         }
-
         this.closeHook.accept(()->pointIndexManager.release(searcher));
 
-        // 5. Build processors for each to-segment
-        SingleToSegProcessor processors;// = new SingleToSegProcessor[toSize];
-        //for (int toOrd = 0; toOrd < toSize; toOrd++) {
-            processors//[toOrd]
-                    = new SingleToSegProcessor(
-                    fromField, toField, pointIndexManager, fromLeavesCached, toSegment,//s.get(toOrd),
-                    toProcess//.get(0)
-                    , dataByJoinIndexByFieldName.values()//absentPointsByTo//.get(0)
-            );
-        //}
-        return processors;
+        SingleToSegProcessor processor;// = new SingleToSegProcessor[toSize];
+        processor//[toOrd]
+                = new SingleToSegProcessor(
+                fromField, toField, pointIndexManager, fromLeavesCached, toSegment,//s.get(toOrd),
+                existingIndices//.get(0)
+                , needsToBeIndexed.values()//absentPointsByTo//.get(0)
+        );
+        return processor;
     }
     @Override
     public boolean isCacheable(LeafReaderContext ctx) {

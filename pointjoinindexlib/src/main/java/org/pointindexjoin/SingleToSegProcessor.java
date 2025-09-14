@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 
@@ -27,19 +28,18 @@ class SingleToSegProcessor //implements AutoCloseable
     final LeafReaderContext toContext;
     final private SearcherManager indexManager;
     private final List<JoinIndexHelper.FromContextCache> fromLeaves;
-    private final List<FromSegIndexData> pointValuesByFromSegOrd;
-    private final Collection<FromSegIndexData> absentIndexNamesByFromOrd;
+    private final List<FromSegIndexData> existingJoinIndices;
+    private final Collection<FromSegIndexData> absentJoinIdices;
     //private final int firstAbsentOrd;
     private final String toField;
     private final String fromField;
 
     static class FromSegIndexData {
-        String indexValuesName;
-        LeafReaderContext fromCxt;
+        final String indexValuesName;
+        final JoinIndexHelper.FromContextCache fromCxt;
         PointValues joinValues;
-        boolean needsToIndex = true;
 
-        public FromSegIndexData(String pointIndexName, LeafReaderContext fromLeaf) {
+        public FromSegIndexData(String pointIndexName, JoinIndexHelper.FromContextCache fromLeaf) {
             this.indexValuesName = pointIndexName;
             fromCxt = fromLeaf;
         }
@@ -54,20 +54,10 @@ class SingleToSegProcessor //implements AutoCloseable
         this.toContext = toContext;
         this.indexManager = indexManager;
         this.fromLeaves = fromLeaves1;
-        this.pointValuesByFromSegOrd = toProcessJoin;
-        this.absentIndexNamesByFromOrd = absentJoinFields;
-        //this.firstAbsentOrd = indexOfNonNullOrNeg(absentJoinFields);
+        this.existingJoinIndices = toProcessJoin;
+        this.absentJoinIdices = absentJoinFields;
         toField = toField1;
         fromField = fromField1;
-    }
-
-    private static int indexOfNonNullOrNeg(String[] absentIndexNamesByFromOrd) {
-        for (int i = 0; i < absentIndexNamesByFromOrd.length; i++) {
-            if (absentIndexNamesByFromOrd[i] != null) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     private static void intersectPointsLazy(PointValues indexPoints, LazyVisitor visitor) throws IOException {
@@ -101,54 +91,23 @@ class SingleToSegProcessor //implements AutoCloseable
         //assert pointTree.moveToParent() == false;
     }
 
-//    @Override
-//    public void close() throws Exception {
-//        this.indexManager.release(pointIndexSearcher);
-//        pointIndexSearcher = null;
-//    }
-
-    /*public boolean isFullyIndexed() {
-        return firstAbsentOrd < 0;
-    }
-
-    public ScorerSupplier createEager(Supplier<IndexWriter> writerFactory) throws IOException {
-        FixedBitSet toBits = new FixedBitSet(toContext.reader().maxDoc());
-
-        EagerJoiner sink = new EagerJoiner(toBits);
-
-        walkAllFromSegIncSegs(writerFactory, sink, true, true);
-
-        if (sink.hasHits()) {
-            return new BitSetScorerSupplier(toBits);
-        } else {
-            return null;
-        }
-    }
-*/
-    public ScorerSupplier createExactBitsFromAbsentSegs(Supplier<IndexWriter> writerFactory) throws IOException {
-        // todo only absents
+    public ScorerSupplier createScorerSuplier(Supplier<IndexWriter> writerFactory) throws IOException {
         FixedBitSet matchingTo = new FixedBitSet(toContext.reader().maxDoc());
-        EagerJoiner exactlyMatchingSink = new EagerJoiner(matchingTo) {
-            @Override
-            public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
-                throw new UnsupportedOperationException();
-            }
-        };
-        walkAllFromSegIncSegs(writerFactory, exactlyMatchingSink, false, true);
+        EagerJoiner exactlyMatchingSink = new EagerJoiner(matchingTo);
+        writeJoinIndices(writerFactory, exactlyMatchingSink);
 
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
-        PointIndexConsumer approxSink = new ApproxIndexConsumer(toApprox);
-
-        walkAllFromSegIncSegs(null, approxSink, true, false);
+        JoinIndexReader approxSink = new ApproxIndexConsumer(toApprox);
+        readJoinIndices(approxSink);
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
-        if (approxSink.hasHits()) {
-            if (exactlyMatchingSink.hasHits()) {
+        if (approxSink.getAsBoolean()) {
+            if (exactlyMatchingSink.getAsBoolean()) {
                 return new RefineTwoPhaseSupplier(toApprox, matchingTo);// accept exacts
             } else { // only lazy
                 return new RefineTwoPhaseSupplier(toApprox);
             }
         } else {
-            if (exactlyMatchingSink.hasHits()) {
+            if (exactlyMatchingSink.getAsBoolean()) {
                 return new BitSetScorerSupplier(matchingTo);
             } else {
                 return null;
@@ -156,112 +115,41 @@ class SingleToSegProcessor //implements AutoCloseable
         }
     }
 
-    private void walkAllFromSegIncSegs(Supplier<IndexWriter> writerFactory, PointIndexConsumer sink, boolean walkExisting, boolean walkAbsentAndIndex) throws IOException {
-
-        if(walkExisting) {
-            /*for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
-                if (fromLeaf != null && pointValuesByFromSegOrd[fromLeaf.lrc.ord] != null) {
-                    sink.onIndexPage(fromLeaf, pointValuesByFromSegOrd[fromLeaf.lrc.ord]);
-                }
-            }*/
-
-            for (FromSegIndexData task : pointValuesByFromSegOrd) {
-                JoinIndexHelper.FromContextCache fromContextCache = null;
-                // TODO optimize
-                for (JoinIndexHelper.FromContextCache cache:fromLeaves) {
-                    if (cache.lrc.ord==task.fromCxt.ord) {
-                        fromContextCache = cache;
-                        break;
-                    }
-                }
-                //JoinIndexHelper.FromContextCache fromContextCache = fromLeaves.get(task.fromCxt.ord);
-                if (fromContextCache!=null) {
-                    sink.onIndexPage(fromContextCache,// hope for strict by ord ordering
-                            task.joinValues);
-                }
+    private void writeJoinIndices(Supplier<IndexWriter> writerFactory, EagerJoiner sink) throws IOException {
+        for (FromSegIndexData task : absentJoinIdices) {
+            JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;;
+            if (fromContextCache != null) {
+                JoinIndexHelper.indexJoinSegments(
+                        this.indexManager, writerFactory,
+                        task.fromCxt.lrc.reader().getSortedSetDocValues(fromField),
+                        toContext.reader().getSortedSetDocValues(toField),
+                        task.indexValuesName,
+                        sink.apply(fromContextCache));
             }
-        }
-        if (walkAbsentAndIndex //&& firstAbsentOrd >= 0
-        ) {
-            for (FromSegIndexData task : absentIndexNamesByFromOrd) {
-
-                JoinIndexHelper.FromContextCache fromContextCache = null;
-                // TODO optimize
-                for (JoinIndexHelper.FromContextCache cache:fromLeaves) {
-                    if (cache.lrc.ord==task.fromCxt.ord) {
-                        fromContextCache = cache;
-                        break;
-                    }
-                }
-                if (fromContextCache != null) {
-                    JoinIndexHelper.indexJoinSegments(
-                            this.indexManager, writerFactory,
-                            task.fromCxt.reader().getSortedSetDocValues(fromField),
-                            toContext.reader().getSortedSetDocValues(toField),
-                            task.indexValuesName,
-                            sink.createTupleConsumer(fromContextCache));
-                }
-            }
-
-           /* for (JoinIndexHelper.FromContextCache fromLeaf : //firstAbsentOrd >= 0 ?
-                    fromLeaves
-                //        .subList(firstAbsentOrd, fromLeaves.size()) : List.<JoinIndexHelper.FromContextCache>of()
-            ) {
-                if (fromLeaf.lrc.ord < firstAbsentOrd) {//TODO skip by []
-                    continue;
-                }
-                if (absentIndexNamesByFromOrd[fromLeaf.lrc.ord] != null) {
-                    JoinIndexHelper.indexJoinSegments(
-                            this.indexManager, writerFactory,
-                            fromLeaf.lrc.reader().getSortedSetDocValues(fromField),
-                            toContext.reader().getSortedSetDocValues(toField),
-                            absentIndexNamesByFromOrd[fromLeaf.lrc.ord],
-                            sink.createTupleConsumer(fromLeaf));
-                }
-            }*/
         }
     }
 
-    /*public ScorerSupplier createLazy(//SingleToSegSupplier debugBro
-    ) throws IOException {
-        FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
-        PointIndexConsumer sink = new ApproxIndexConsumer(toApprox);
-
-        walkAllFromSegIncSegs(null, sink, true, false);
-        //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
-        if (sink.hasHits()) {
-            return new RefineTwoPhaseSupplier(toApprox);
-        } else {
-            return null;
+    private void readJoinIndices(JoinIndexReader sink) throws IOException {
+        for (FromSegIndexData task : existingJoinIndices) {
+            JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;
+            if (fromContextCache!=null) { // TODO it never null
+                sink.readJoinIndex(fromContextCache,
+                        task.joinValues);
+            }
         }
-    }*/
+    }
 
     private int refine(FixedBitSet toApprox, int startingAtToDoc, FixedBitSet matchingForSure) throws IOException {
         RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
                 startingAtToDoc);
 
-        for (FromSegIndexData task : pointValuesByFromSegOrd) {
-            //JoinIndexHelper.FromContextCache fromContextCache = fromLeaves.get(task.fromCxt.ord);
-            JoinIndexHelper.FromContextCache fromContextCache = null;
-            // TODO optimize
-            for (JoinIndexHelper.FromContextCache cache:fromLeaves) {
-                if (cache.lrc.ord==task.fromCxt.ord) {
-                    fromContextCache = cache;
-                    break;
-                }
-            }
+        for (FromSegIndexData task : existingJoinIndices) {
+            JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;
             if (fromContextCache!=null) {
                 refiner.fromCtxLeaf = fromContextCache;
                 task.joinValues.intersect(refiner);
             }
         }
-
-        /*for (JoinIndexHelper.FromContextCache cacheFrom : fromLeaves) {
-            refiner.fromCtxLeaf = cacheFrom;
-            if(this.pointValuesByFromSegOrd[cacheFrom.lrc.ord]!=null) {
-                this.pointValuesByFromSegOrd[cacheFrom.lrc.ord].intersect(refiner);
-            }//else this from leaf has hits, but they were handled by just written idx-seg
-        }*/
         //assert refiner.minUpperSeen < Integer.MAX_VALUE;
         if (matchingForSure!=null) {
             FixedBitSet.orRange(matchingForSure,startingAtToDoc, refiner.toRefined, 0,
@@ -294,7 +182,7 @@ class SingleToSegProcessor //implements AutoCloseable
         public boolean needsVisitDocValues() {
             toApprox.set(lowerToIdx, upperToIdx + 1);
             hasHits = true;
-            return false; // this trick gives all-bits approximation due to using
+            return false; // TODO this trick gives all-bits approximation due to using
             // min-maxes from header (non-leaf) nodes,
             // however refining kicks in quite early.
             // to get narrow approx we need an own bkd-tree.
@@ -405,7 +293,8 @@ class SingleToSegProcessor //implements AutoCloseable
         }
     }
 
-    private static class EagerJoiner implements PointIndexConsumer {
+    private static class EagerJoiner implements Function<JoinIndexHelper.FromContextCache ,IntBinaryOperator>,
+            BooleanSupplier{
         private final FixedBitSet toBits;
         private boolean hasHits = false;
 
@@ -414,16 +303,7 @@ class SingleToSegProcessor //implements AutoCloseable
         }
 
         @Override
-        public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
-            JoinIndexHelper.InnerJoinVisitor toBitsDumper = new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
-                    fromCtx.lowerDocId, fromCtx.upperDocId);
-            indexPoints.intersect(toBitsDumper);
-            hasHits |= toBitsDumper.getAsBoolean();
-        }
-
-        @Override
-        public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
-            // TODO return void
+        public IntBinaryOperator apply(JoinIndexHelper.FromContextCache fromLeaf) {
             return (f, t) -> {
                 if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
                     toBits.set(t);
@@ -434,36 +314,36 @@ class SingleToSegProcessor //implements AutoCloseable
         }
 
         @Override
-        public boolean hasHits() {
+        public boolean getAsBoolean() {
             return hasHits;
         }
     }
 
-    private static class ApproxIndexConsumer implements PointIndexConsumer {
+    interface JoinIndexReader extends BooleanSupplier{
+        void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache, PointValues pointValues) throws IOException;
+    }
+
+    private static class ApproxIndexConsumer implements JoinIndexReader {
         private final FixedBitSet toApprox;
-        private boolean hasHits = false;
+        boolean hasHits = false;
 
         public ApproxIndexConsumer(FixedBitSet toApprox) {
             this.toApprox = toApprox;
         }
 
         @Override
-        public void onIndexPage(JoinIndexHelper.FromContextCache fromCtx, PointValues indexPoints) throws IOException {
+        public void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache, PointValues pointValues)
+                throws IOException {
             // TODO track emptiness
             //PointValues.intersect((PointValues.IntersectVisitor) new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
             //        fromCtx.lowerDocId, fromCtx.upperDocId), pointTree);
-            ApproxDumper visitor = new ApproxDumper(fromCtx.bits, toApprox);
-            intersectPointsLazy(indexPoints, visitor);
+            ApproxDumper visitor = new ApproxDumper(fromContextCache.bits, toApprox);
+            intersectPointsLazy(pointValues, visitor);
             hasHits |= visitor.getAsBoolean();
         }
 
         @Override
-        public IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromLeaf) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean hasHits() {
+        public boolean getAsBoolean() {
             return hasHits;
         }
     }

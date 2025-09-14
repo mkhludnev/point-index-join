@@ -11,5 +11,5 @@ interface PointIndexConsumer {
     IntBinaryOperator createTupleConsumer(JoinIndexHelper.FromContextCache fromCtx);
 
     boolean hasHits();
-    // TODO count cardinality instead
+    // TODO count cardinality instead, but why?
 }
