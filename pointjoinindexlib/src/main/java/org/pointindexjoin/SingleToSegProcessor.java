@@ -1,5 +1,13 @@
 package org.pointindexjoin;
 
+import java.io.IOException;
+import java.util.Collection;
+import java.util.List;
+import java.util.function.Function;
+import java.util.function.IntBinaryOperator;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
+
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
@@ -11,15 +19,6 @@ import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
-
-import java.io.IOException;
-import java.util.Collection;
-import java.util.List;
-import java.util.function.BooleanSupplier;
-import java.util.function.Function;
-import java.util.function.IntBinaryOperator;
-import java.util.function.IntSupplier;
-import java.util.function.Supplier;
 
 class SingleToSegProcessor //implements AutoCloseable
 {
@@ -102,9 +101,10 @@ class SingleToSegProcessor //implements AutoCloseable
         boolean hasExactHits = exactlyMatchingSink.getAsInt() > 0;
         if (approxSink.getAsInt()>0) {
             if (hasExactHits) {
-                return new RefineTwoPhaseSupplier(toApprox, exactMatchingTo, existingJoinIndices);// accept exacts
+                return new RefineTwoPhaseSupplier(toApprox, approxSink.getAsInt(), exactMatchingTo,
+                        existingJoinIndices);// accept exacts
             } else { // only lazy
-                return new RefineTwoPhaseSupplier(toApprox, existingJoinIndices); //ctys
+                return new RefineTwoPhaseSupplier(toApprox, approxSink.getAsInt(), existingJoinIndices); //ctys
             }
         } else {
             if (hasExactHits) {
@@ -117,7 +117,7 @@ class SingleToSegProcessor //implements AutoCloseable
 
     private void writeJoinIndices(Supplier<IndexWriter> writerFactory, EagerJoiner sink) throws IOException {
         for (FromSegIndexData task : absentJoinIdices) {
-            JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;;
+            JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;
             if (fromContextCache != null) {
                 JoinIndexHelper.indexJoinSegments(
                         this.indexManager, writerFactory,

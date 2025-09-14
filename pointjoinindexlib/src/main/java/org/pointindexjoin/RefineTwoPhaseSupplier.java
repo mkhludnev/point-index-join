@@ -15,27 +15,26 @@ import org.apache.lucene.util.NumericUtils;
 class RefineTwoPhaseSupplier extends ScorerSupplier {
     private final List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices;
     private final FixedBitSet toApprox;
-    private final int cty;
     private final FixedBitSet matchingForSure;
+    private final int approxHits;
     DocIdSetIterator approximation;
 
-    public RefineTwoPhaseSupplier(FixedBitSet toApprox,
+    public RefineTwoPhaseSupplier(FixedBitSet toApprox, int approxHits,
                                   List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices) {
-        this.toApprox = toApprox;
-        this.cty = toApprox.cardinality();
-        approximation = new BitSetIterator(toApprox, cty);
-        matchingForSure = null;
-        this.existingJoinIndices = existingJoinIndices;
+        this(toApprox, approxHits, null, existingJoinIndices);
     }
 
-    public RefineTwoPhaseSupplier(FixedBitSet toApprox, FixedBitSet matchingTo,
+    public RefineTwoPhaseSupplier(FixedBitSet toApprox, int approxHits,
+                                  FixedBitSet exactMatchingTo,
                                   List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices) {
         this.toApprox = toApprox;
-        this.cty = toApprox.cardinality();
-        this.toApprox.or(matchingTo);
-        this.matchingForSure = matchingTo;
-        approximation = new BitSetIterator(toApprox, cty);
+        approximation = new BitSetIterator(toApprox, this.approxHits = approxHits);
         this.existingJoinIndices = existingJoinIndices;
+        if (exactMatchingTo != null) {
+            this.toApprox.or(exactMatchingTo);
+        }
+        this.matchingForSure = exactMatchingTo;
+
     }
 
     private int refine(FixedBitSet toApprox, int startingAtToDoc, FixedBitSet matchingForSure) throws IOException {
@@ -123,7 +122,7 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
 
     @Override
     public long cost() {
-        return cty;
+        return approxHits;
     }
 
     static class RefineToApproxVisitor implements PointValues.IntersectVisitor {

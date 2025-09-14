@@ -1,31 +1,25 @@
 package org.pointindexjoin;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.IntPoint;
-import org.apache.lucene.index.FieldInfo;
-import org.apache.lucene.index.FieldInfos;
-import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.PointValues;
-import org.apache.lucene.index.SegmentReader;
-import org.apache.lucene.index.SortedSetDocValues;
-import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.SearcherManager;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.FixedBitSet;
-import org.apache.lucene.util.NumericUtils;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BooleanSupplier;
 import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
+
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.SegmentReader;
+import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.SearcherManager;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.FixedBitSet;
 
 public class JoinIndexHelper {
     static final int EMPTY_JOIN_1D = 0;
