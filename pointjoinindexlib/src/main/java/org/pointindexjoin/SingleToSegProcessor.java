@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntBinaryOperator;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 class SingleToSegProcessor //implements AutoCloseable
@@ -95,18 +96,19 @@ class SingleToSegProcessor //implements AutoCloseable
         writeJoinIndices(writerFactory, exactlyMatchingSink);
 
         FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
-        JoinIndexReader approxSink = new ApproxIndexConsumer(toApprox);
+        ApproxIndexConsumer approxSink = new ApproxIndexConsumer(toApprox);
         readJoinIndices(approxSink);
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
-        if (approxSink.getAsBoolean()) {
-            if (exactlyMatchingSink.getAsBoolean()) {
+        boolean hasExactHits = exactlyMatchingSink.getAsInt() > 0;
+        if (approxSink.getAsInt()>0) {
+            if (hasExactHits) {
                 return new RefineTwoPhaseSupplier(toApprox, exactMatchingTo, existingJoinIndices);// accept exacts
             } else { // only lazy
                 return new RefineTwoPhaseSupplier(toApprox, existingJoinIndices); //ctys
             }
         } else {
-            if (exactlyMatchingSink.getAsBoolean()) {
-                return new BitSetScorerSupplier(exactMatchingTo);// cty
+            if (hasExactHits) {
+                return new BitSetScorerSupplier(exactMatchingTo, exactlyMatchingSink.getAsInt());// cty
             } else {
                 return null;
             }
@@ -141,12 +143,14 @@ class SingleToSegProcessor //implements AutoCloseable
         boolean needsVisitDocValues();
     }
 
-    private static class ApproxDumper implements LazyVisitor, BooleanSupplier {
+    private static class ApproxDumper implements LazyVisitor,
+    IntSupplier{
         private final FixedBitSet toApprox;
         private final FixedBitSet fromBits;
         private int upperToIdx;
         private int lowerToIdx;
         private boolean hasHits;
+        private int hits = 0;
 
         public ApproxDumper(FixedBitSet fromCtx, FixedBitSet toApprox) {
             this.toApprox = toApprox;
@@ -157,6 +161,7 @@ class SingleToSegProcessor //implements AutoCloseable
         public boolean needsVisitDocValues() {
             toApprox.set(lowerToIdx, upperToIdx + 1);
             hasHits = true;
+            hits += upperToIdx-lowerToIdx+1; // it's darn overestimate
             return false; // TODO this trick gives all-bits approximation due to using
             // min-maxes from header (non-leaf) nodes,
             // however refining kicks in quite early.
@@ -187,8 +192,8 @@ class SingleToSegProcessor //implements AutoCloseable
         }
 
         @Override
-        public boolean getAsBoolean() {
-            return hasHits;
+        public int getAsInt() {
+            return hits;
         }
     }
 
@@ -197,9 +202,9 @@ class SingleToSegProcessor //implements AutoCloseable
         private final int cardinality;
         private final FixedBitSet toBits;
 
-        public BitSetScorerSupplier(FixedBitSet toBits) {
+        public BitSetScorerSupplier(FixedBitSet toBits, int cty) {
             this.toBits = toBits;
-            cardinality = toBits.cardinality();
+            cardinality = cty;
         }
 
         @Override
@@ -213,10 +218,10 @@ class SingleToSegProcessor //implements AutoCloseable
         }
     }
 
-    private static class EagerJoiner implements Function<JoinIndexHelper.FromContextCache ,IntBinaryOperator>,
-            BooleanSupplier{
+    private static class EagerJoiner implements Function<JoinIndexHelper.FromContextCache, IntBinaryOperator>,
+            IntSupplier {
         private final FixedBitSet toBits;
-        private boolean hasHits = false;
+        private int hits = 0;
 
         public EagerJoiner(FixedBitSet toBits) {
             this.toBits = toBits;
@@ -227,25 +232,25 @@ class SingleToSegProcessor //implements AutoCloseable
             return (f, t) -> {
                 if (f >= fromLeaf.lowerDocId && f <= fromLeaf.upperDocId && fromLeaf.bits.get(f)) {
                     toBits.set(t);
-                    hasHits = true;
+                    hits++;
                 }
                 return 0;
             };
         }
 
         @Override
-        public boolean getAsBoolean() {
-            return hasHits;
+        public int getAsInt() {
+            return hits;
         }
     }
 
-    interface JoinIndexReader extends BooleanSupplier{
+    interface JoinIndexReader {
         void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache, PointValues pointValues) throws IOException;
     }
 
-    private static class ApproxIndexConsumer implements JoinIndexReader {
+    private static class ApproxIndexConsumer implements JoinIndexReader, IntSupplier {
         private final FixedBitSet toApprox;
-        boolean hasHits = false;
+        int hits = 0;
 
         public ApproxIndexConsumer(FixedBitSet toApprox) {
             this.toApprox = toApprox;
@@ -259,12 +264,12 @@ class SingleToSegProcessor //implements AutoCloseable
             //        fromCtx.lowerDocId, fromCtx.upperDocId), pointTree);
             ApproxDumper visitor = new ApproxDumper(fromContextCache.bits, toApprox);
             intersectPointsLazy(pointValues, visitor);
-            hasHits |= visitor.getAsBoolean();
+            hits = Integer.max(hits, visitor.getAsInt()); //
         }
 
         @Override
-        public boolean getAsBoolean() {
-            return hasHits;
+        public int getAsInt() {
+            return hits;
         }
     }
 
