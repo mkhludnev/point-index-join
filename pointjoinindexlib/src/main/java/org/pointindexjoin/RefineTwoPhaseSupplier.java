@@ -24,6 +24,9 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
         this(toApprox, approxHits, null, existingJoinIndices);
     }
 
+    /**
+     * TODO refine into exact bitset (OR), then AND into toApprox
+     */
     public RefineTwoPhaseSupplier(FixedBitSet toApprox, int approxHits,
                                   FixedBitSet exactMatchingTo,
                                   List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices) {
@@ -38,6 +41,7 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
     }
 
     private int refine(FixedBitSet toApprox, int startingAtToDoc, FixedBitSet matchingForSure) throws IOException {
+        // rather reuse, but clean every "to" page refining.
         RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
                 startingAtToDoc);
 
@@ -93,7 +97,7 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
 
                     @Override
                     public float matchCost() {
-                        return Integer.MAX_VALUE;
+                        return approxHits;
                     }
                 };
             }

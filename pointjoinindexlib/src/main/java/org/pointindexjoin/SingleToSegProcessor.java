@@ -259,12 +259,9 @@ class SingleToSegProcessor //implements AutoCloseable
         @Override
         public void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache, PointValues pointValues)
                 throws IOException {
-            // TODO track emptiness
-            //PointValues.intersect((PointValues.IntersectVisitor) new JoinIndexHelper.InnerJoinVisitor(fromCtx.bits, toBits,
-            //        fromCtx.lowerDocId, fromCtx.upperDocId), pointTree);
             ApproxDumper visitor = new ApproxDumper(fromContextCache.bits, toApprox);
             intersectPointsLazy(pointValues, visitor);
-            hits = Integer.max(hits, visitor.getAsInt()); //
+            hits += visitor.getAsInt();//??? Integer.max(hits, visitor.getAsInt()); //
         }
 
         @Override
