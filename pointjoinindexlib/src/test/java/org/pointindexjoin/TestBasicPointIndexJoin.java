@@ -1,6 +1,18 @@
 package org.pointindexjoin;
 
-import com.carrotsearch.randomizedtesting.annotations.Seed;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Supplier;
+import java.util.logging.Logger;
+import java.util.stream.Collectors;
+
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.SortedSetDocValuesField;
@@ -22,20 +34,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BytesRef;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Supplier;
-import java.util.logging.Logger;
-import java.util.stream.Collectors;
-
-//@Seed("D9428435FB4E78D2")
+//@Seed("21F8512433676D96")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
 
@@ -57,9 +56,6 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         fromw.addDocument(child1);
     }
 
-    // [132_17, 996_82, 852_99, 251_16, 985_87, 597_77, 557_38, 209_36, 42_13, 127_29] should join to
-    // [597, 852, 985, 127, 557, 209, 251, 42] but actually
-    // 42,127,209,251,557,597,852,985,996
     private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap,
                                    IndexSearcher fromSearcher, SearcherManager indexManager,
                                    Supplier<IndexWriter> indexWriterSupplier, IndexSearcher toSearcher) throws Exception {
@@ -106,7 +102,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         joinIndexQuery.close();
     }
 
-    //@Seed("72B899202492FEFC")
+    //@Seed("8A024C31ECBBEBB8")
     public void testBasic() throws Exception {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();

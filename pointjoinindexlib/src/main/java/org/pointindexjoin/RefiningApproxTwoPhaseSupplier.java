@@ -12,56 +12,48 @@ import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
-class RefineTwoPhaseSupplier extends ScorerSupplier {
+class RefiningApproxTwoPhaseSupplier extends ScorerSupplier {
     private final List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices;
-    private final FixedBitSet toApprox;
-    private final FixedBitSet matchingForSure;
+    static final int eagerFetch = Long.BYTES * 8;
     private final int approxHits;
+    final protected FixedBitSet toApprox;
+    //private final LeafReaderContext toContext;
     DocIdSetIterator approximation;
+    private RefineToApproxVisitor refiner;
 
-    public RefineTwoPhaseSupplier(FixedBitSet toApprox, int approxHits,
-                                  List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices) {
-        this(toApprox, approxHits, null, existingJoinIndices);
-    }
-
-    /**
-     * TODO refine into exact bitset (OR), then AND into toApprox
-     */
-    public RefineTwoPhaseSupplier(FixedBitSet toApprox, int approxHits,
-                                  FixedBitSet exactMatchingTo,
-                                  List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices) {
+    public RefiningApproxTwoPhaseSupplier(FixedBitSet toApprox, int approxHits,
+                                          List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices) {
         this.toApprox = toApprox;
         approximation = new BitSetIterator(toApprox, this.approxHits = approxHits);
         this.existingJoinIndices = existingJoinIndices;
-        if (exactMatchingTo != null) {
-            this.toApprox.or(exactMatchingTo);
-        }
-        this.matchingForSure = exactMatchingTo;
-
+        //this.toContext = toContext;
     }
 
-    private int refine(FixedBitSet toApprox, int startingAtToDoc, FixedBitSet matchingForSure) throws IOException {
-        // rather reuse, but clean every "to" page refining.
-        RefineToApproxVisitor refiner = new RefineToApproxVisitor(//toApprox,
-                startingAtToDoc);
+    protected int refine(int startingAtToDoc) throws IOException {
+        if (this.refiner == null) {
+            this.refiner = createRefiningVisitor();
+        }
+
+        this.refiner.setStartingDocId(startingAtToDoc);
+        int wipeUpTo = Math.min(startingAtToDoc + eagerFetch, toApprox.length());
+        wipeDestBeforeRefining(startingAtToDoc, wipeUpTo);
 
         for (SingleToSegProcessor.FromSegIndexData task : this.existingJoinIndices) {
             JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;
             if (fromContextCache != null) {
-                refiner.fromCtxLeaf = fromContextCache;
-                task.joinValues.intersect(refiner);
+                PointValues pointIndex = task.joinValues;
+                refiner.refineFromSegment(fromContextCache, pointIndex);
             }
         }
-        //assert refiner.minUpperSeen < Integer.MAX_VALUE;
-        if (matchingForSure != null) {
-            FixedBitSet.orRange(matchingForSure, startingAtToDoc, refiner.toRefined, 0,
-                    startingAtToDoc + refiner.eagerFetch < matchingForSure.length() ?
-                            refiner.eagerFetch : matchingForSure.length() - startingAtToDoc);
-        }
-        int lenAvailable = startingAtToDoc + refiner.eagerFetch < toApprox.length() ?
-                refiner.eagerFetch : toApprox.length() - startingAtToDoc;
-        FixedBitSet.andRange(refiner.toRefined, 0, toApprox, startingAtToDoc, lenAvailable);
-        return startingAtToDoc + lenAvailable;
+        return wipeUpTo;
+    }
+
+    protected void wipeDestBeforeRefining(int startingAtToDoc, int wipeUpTo) {
+        toApprox.clear(startingAtToDoc, wipeUpTo);
+    }
+
+    protected RefineToApproxVisitor createRefiningVisitor() {
+        return new RefineToApproxVisitor(toApprox);
     }
 
     @Override
@@ -78,16 +70,17 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
                     @Override
                     public boolean matches() throws IOException {
                         int docID = approximation().docID();
-                        if (matchingForSure != null) {
-                            if (matchingForSure.get(docID)) {
-                                return true;
-                            }
-                        }
                         //int debugDoc = debugDisi.advance(docID);
                         if (docID >= refinedUpTo) {
+                            // if(docID+eagerFetch+toContext.docBase>988) {
+                            //     Logger.getLogger(RefiningApproxTwoPhaseSupplier.class.getName()).info("hop");
+                            // }
                             assert toApprox.get(docID);
-                            refinedUpTo = refine(toApprox, docID, matchingForSure);
-                            assert refinedUpTo != Integer.MAX_VALUE;
+                            refinedUpTo = refine(docID);
+                            // Logger.getLogger(RefiningApproxTwoPhaseSupplier.class.getName()).info(
+                            //         "refine ["+(docID+toContext.docBase)+".."+(refinedUpTo+toContext.docBase)+"} where "
+                            //                 +toApprox.get(docID)+" and " +toApprox.get(refinedUpTo-1)+" correspondingly"
+                            // );
                         }
                         assert docID <= refinedUpTo;
                         //assert debugBro.toBits.get(docID)==toApprox.get(docID): "refined["+docID+"]=="+toApprox.get(docID)+"
@@ -130,19 +123,16 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
     }
 
     static class RefineToApproxVisitor implements PointValues.IntersectVisitor {
-        //int minUpperSeen;
-        //private int theLastUpperToIdx;
-        final int eagerFetch = Long.BYTES * 8;
-        //private final FixedBitSet toApprox;
-        private final int toDocID;
-        final FixedBitSet toRefined = new FixedBitSet(eagerFetch);
-        JoinIndexHelper.FromContextCache fromCtxLeaf;
+        private final FixedBitSet destination;
+        private int startingDocId;
+        private JoinIndexHelper.FromContextCache fromCtxLeaf;
 
-        public RefineToApproxVisitor(//FixedBitSet toApprox,
-                                     int toDocID) {
-            //this.toApprox = toApprox;
-            this.toDocID = toDocID;
-            //minUpperSeen = Integer.MAX_VALUE;
+        public RefineToApproxVisitor(FixedBitSet toApprox) {
+            this.destination = toApprox;
+        }
+
+        void setStartingDocId(int startingDocId) {
+            this.startingDocId = startingDocId;
         }
 
         @Override
@@ -156,10 +146,10 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
             int toIdx = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
             //minUpperSeen = Math.min(minUpperSeen, theLastUpperToIdx); // sadly it's repeated many times per leaf
 
-            if (toIdx >= this.toDocID && toIdx < this.toDocID + eagerFetch) {
+            if (toIdx >= this.startingDocId && toIdx < this.startingDocId + eagerFetch) {
                 if (fromCtxLeaf.bits.get(fromIdx)) {
-                    int refineBitShifted = toIdx - this.toDocID;
-                    toRefined.set(refineBitShifted); //no need to ever set it since we refine???
+                    //int refineBitShifted = toIdx - this.toDocID;
+                    destination.set(toIdx); //no need to ever set it since we refine???
                 }
             }
         }
@@ -173,7 +163,8 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
             int upperToIdx = NumericUtils.sortableBytesToInt(maxPackedValue, Integer.BYTES);
 
             if (fromCtxLeaf.upperDocId < lowerFromIdx || upperFromIdx < fromCtxLeaf.lowerDocId ||
-                    toDocID + eagerFetch < lowerToIdx || upperToIdx < toDocID) {
+                    startingDocId + eagerFetch <= lowerToIdx // it's excluding
+                    || upperToIdx < startingDocId) {
                 return PointValues.Relation.CELL_OUTSIDE_QUERY;
             } /*else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
         return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the pointstheLastUpperToIdx
@@ -181,6 +172,12 @@ class RefineTwoPhaseSupplier extends ScorerSupplier {
     }*/
             //theLastUpperToIdx = upperToIdx;
             return PointValues.Relation.CELL_CROSSES_QUERY;
+        }
+
+        public void refineFromSegment(JoinIndexHelper.FromContextCache fromContextCache, PointValues pointIndex)
+                throws IOException {
+            this.fromCtxLeaf = fromContextCache;
+            pointIndex.intersect(this);
         }
     }
 }
