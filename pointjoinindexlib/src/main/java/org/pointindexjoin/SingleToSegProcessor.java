@@ -55,38 +55,40 @@ class SingleToSegProcessor //implements AutoCloseable
 
     public ScorerSupplier createScorerSupplier(Supplier<IndexWriter> writerFactory) throws IOException {
         // TODO guess, which of these bit sets are not necessary
-        FixedBitSet exactMatchingTo;
-        exactMatchingTo = new FixedBitSet(toContext.reader().maxDoc());
-        EagerJoiner exactlyMatchingSink = new EagerJoiner(exactMatchingTo);
-        writeJoinIndices(writerFactory, exactlyMatchingSink);
+        EagerJoiner exactlyMatchingSink =
+                writeJoinIndices(writerFactory, () -> new EagerJoiner(new FixedBitSet(toContext.reader().maxDoc())));
 
-        FixedBitSet toApprox = new FixedBitSet(toContext.reader().maxDoc());
-        DefaultJoinIndexReader approxSink = new DefaultJoinIndexReader(toApprox);
-        readJoinIndices(approxSink);
+        DefaultJoinIndexReader approxSink =
+                readJoinIndices(() -> new DefaultJoinIndexReader(new FixedBitSet(toContext.reader().maxDoc())));
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
-        boolean hasExactHits = exactlyMatchingSink.getAsInt() > 0;
-        if (approxSink.getAsInt()>0) {
+        boolean hasExactHits = exactlyMatchingSink != null && exactlyMatchingSink.getAsInt() > 0;
+        if (approxSink != null && approxSink.getAsInt() > 0) {
             if (hasExactHits) {
                 //return new RefineTwoPhaseSupplier(toApprox,approxSink.getAsInt(),exactMatchingTo, existingJoinIndices);
-                return new RefiningCertainMatchesSupplier(toApprox, approxSink.getAsInt(), existingJoinIndices,
-                        exactMatchingTo);// accept exacts
+                return new RefiningCertainMatchesSupplier(approxSink.toApprox, approxSink.getAsInt(), existingJoinIndices,
+                        exactlyMatchingSink.toBits);// accept exacts
             } else { // only lazy
                 //return new RefineTwoPhaseSupplier(toApprox,approxSink.getAsInt(), existingJoinIndices);
-                return new RefiningApproxTwoPhaseSupplier(toApprox, approxSink.getAsInt(), existingJoinIndices); //ctys
+                return new RefiningApproxTwoPhaseSupplier(approxSink.toApprox, approxSink.getAsInt(), existingJoinIndices); //ctys
             }
         } else {
             if (hasExactHits) {
-                return new BitSetScorerSupplier(exactMatchingTo, exactlyMatchingSink.getAsInt());// cty
+                return new BitSetScorerSupplier(exactlyMatchingSink.toBits, exactlyMatchingSink.getAsInt());// cty
             } else {
                 return null;
             }
         }
     }
 
-    private void writeJoinIndices(Supplier<IndexWriter> writerFactory, EagerJoiner sink) throws IOException {
+    private EagerJoiner writeJoinIndices(Supplier<IndexWriter> writerFactory, Supplier<EagerJoiner> sinkFactory)
+            throws IOException {
+        EagerJoiner sink = null;
         for (FromSegIndexData task : absentJoinIdices) {
             JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;
             //if (fromContextCache != null) {
+            if (sink == null) {
+                sink = sinkFactory.get();
+            }
             JoinIndexHelper.indexJoinSegments(
                     this.indexManager, writerFactory,
                     task.fromCxt.lrc.reader().getSortedSetDocValues(fromField),
@@ -95,16 +97,22 @@ class SingleToSegProcessor //implements AutoCloseable
                     sink.apply(fromContextCache));
             //}
         }
+        return sink;
     }
 
-    private void readJoinIndices(JoinIndexReader sink) throws IOException {
+    private DefaultJoinIndexReader readJoinIndices(Supplier<DefaultJoinIndexReader> sinkFactory) throws IOException {
+        DefaultJoinIndexReader sink = null;
         for (FromSegIndexData task : existingJoinIndices) {
+            if (sink == null) {
+                sink = sinkFactory.get();
+            }
             JoinIndexHelper.FromContextCache fromContextCache = task.fromCxt;
             //if (fromContextCache!=null) { // TODO it never null
             sink.readJoinIndex(fromContextCache,
                     task.joinValues);
             //}
         }
+        return sink;
     }
 
     private static class EagerJoiner implements Function<JoinIndexHelper.FromContextCache, IntBinaryOperator>,

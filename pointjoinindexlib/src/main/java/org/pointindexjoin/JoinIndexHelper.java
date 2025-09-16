@@ -122,6 +122,7 @@ public class JoinIndexHelper {
         return fromSegmentName + "\u22ca" + toSegmentName;
     }
 
+    //TO-DO reuse from and to sides of join ops <- it doesn't seem ever possible, there's nothing to cache really
     static void indexJoinSegments(SearcherManager indexManager, Supplier<IndexWriter> writerFactory, SortedSetDocValues fromDV, SortedSetDocValues toDV,
                                   String indexFieldName,
                                   IntBinaryOperator alongSideJoin) throws IOException {

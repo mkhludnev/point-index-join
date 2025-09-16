@@ -17,7 +17,6 @@ import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.ScorerSupplier;
-import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
 
 class JoinIndexWeight extends Weight {
@@ -47,21 +46,16 @@ class JoinIndexWeight extends Weight {
             return null;
         }
         SingleToSegProcessor processor = this.extractIndices(
-                joinIndexQuery.indexManager,
-                toContext,
-                joinIndexQuery.fromField,
-                joinIndexQuery.toField,
-                fromLeaves
-        );
+                toContext);
         return processor.createScorerSupplier(joinIndexQuery.writerFactory);
     }
 
-    SingleToSegProcessor extractIndices(SearcherManager pointIndexManager, LeafReaderContext toSegment, String fromField, String toField, List<JoinIndexHelper.FromContextCache> fromLeavesCached) throws IOException {
+    SingleToSegProcessor extractIndices(LeafReaderContext toSegment) throws IOException {
 
-        Map<String, SingleToSegProcessor.FromSegIndexData> needsToBeIndexed = new LinkedHashMap<>(fromLeavesCached.size());
+        Map<String, SingleToSegProcessor.FromSegIndexData> needsToBeIndexed = new LinkedHashMap<>(fromLeaves.size());
         String toSegmentName = getSegmentName(toSegment);
         //List<SingleToSegProcessor.FromSegIndexData> fromSegData = new ArrayList<>(fromSegments.size());
-        for (JoinIndexHelper.FromContextCache fromLeaf : fromLeavesCached) {
+        for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
             String fromSegmentName = getSegmentName(fromLeaf.lrc);
             String pointIndexName = getPointIndexFieldName(fromSegmentName, toSegmentName);
             SingleToSegProcessor.FromSegIndexData fromSegIndexData = new SingleToSegProcessor.FromSegIndexData(pointIndexName,
@@ -69,9 +63,8 @@ class JoinIndexWeight extends Weight {
             needsToBeIndexed.put(pointIndexName, fromSegIndexData);
         }
 
-        List<SingleToSegProcessor.FromSegIndexData> existingIndices = new ArrayList<>(fromLeavesCached.size());
-        IndexSearcher searcher = pointIndexManager.acquire();
-        // TODO, nice to have idxSeg[fieldName]???
+        List<SingleToSegProcessor.FromSegIndexData> existingIndices = new ArrayList<>(fromLeaves.size());
+        IndexSearcher searcher = joinIndexQuery.indexManager.acquire();
         for (LeafReaderContext pointSegment : searcher.getIndexReader().leaves()) {
             FieldInfos fieldInfos = pointSegment.reader().getFieldInfos();
             for (FieldInfo fieldInfo : fieldInfos) {
@@ -81,15 +74,16 @@ class JoinIndexWeight extends Weight {
                         fromSegIndexData.joinValues = pointSegment.reader().getPointValues(fieldInfo.name);
                         existingIndices.add(fromSegIndexData);
                     }// else tombstone, we don't care. this from query doesn't hit that seg.
-                }//TODO else drop redundant
+                }
             }
         }
-        this.closeHook.accept(()->pointIndexManager.release(searcher));
+        this.closeHook.accept(() -> joinIndexQuery.indexManager.release(searcher));
 
         SingleToSegProcessor processor;// = new SingleToSegProcessor[toSize];
         processor//[toOrd]
                 = new SingleToSegProcessor(
-                fromField, toField, pointIndexManager, fromLeavesCached, toSegment,//s.get(toOrd),
+                joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toSegment,
+//s.get(toOrd),
                 existingIndices//.get(0)
                 , needsToBeIndexed.values()//absentPointsByTo//.get(0)
         );

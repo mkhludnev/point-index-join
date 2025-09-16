@@ -8,7 +8,7 @@ import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
 class DefaultJoinIndexReader implements SingleToSegProcessor.JoinIndexReader, IntSupplier {
-    private final FixedBitSet toApprox;
+    protected final FixedBitSet toApprox;
     private int hits = 0;
     private ApproximatingJoinIndexReader visitor;
 
