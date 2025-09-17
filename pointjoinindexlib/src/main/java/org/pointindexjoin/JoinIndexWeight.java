@@ -27,7 +27,8 @@ class JoinIndexWeight extends Weight {
     //private final SingleToSegProcessor[] toSegments;
     //private final SingleToSegProcessor[] toSegments;
 
-    public JoinIndexWeight(IndexSearcher toSearcher, JoinIndexQuery joinIndexQuery, ScoreMode scoreMode, Consumer<AutoCloseable> consumer) throws IOException {
+    public JoinIndexWeight(JoinIndexQuery joinIndexQuery, ScoreMode scoreMode, Consumer<AutoCloseable> consumer)
+            throws IOException {
         super(joinIndexQuery);
         this.joinIndexQuery = joinIndexQuery;
         // this.scoreMode = scoreMode;
@@ -77,12 +78,16 @@ class JoinIndexWeight extends Weight {
                 }
             }
         }
-        this.closeHook.accept(() -> joinIndexQuery.indexManager.release(searcher));
+        if (!existingIndices.isEmpty()) {
+            this.closeHook.accept(() -> joinIndexQuery.indexManager.release(searcher));
+        } else {
+            joinIndexQuery.indexManager.release(searcher);
+        }
 
         SingleToSegProcessor processor;// = new SingleToSegProcessor[toSize];
         processor//[toOrd]
                 = new SingleToSegProcessor(
-                joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, fromLeaves, toSegment,
+                joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, toSegment,
 //s.get(toOrd),
                 existingIndices//.get(0)
                 , needsToBeIndexed.values()//absentPointsByTo//.get(0)

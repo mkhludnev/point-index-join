@@ -1,5 +1,10 @@
 package org.pointindexjoin;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Supplier;
+
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.ConstantScoreQuery;
@@ -13,12 +18,6 @@ import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.FixedBitSet;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 public class JoinIndexQuery extends Query implements  AutoCloseable{
     final IndexSearcher fromSearcher;
@@ -62,7 +61,7 @@ public class JoinIndexQuery extends Query implements  AutoCloseable{
 
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
-        return new JoinIndexWeight(searcher, this, scoreMode, JoinIndexQuery.this.closeables::add);
+        return new JoinIndexWeight(this, scoreMode, JoinIndexQuery.this.closeables::add);
     }
 
     @Override

@@ -6,7 +6,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.IntBinaryOperator;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
 
@@ -16,6 +15,7 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.util.BytesRef;
@@ -27,7 +27,8 @@ public class JoinIndexHelper {
     private JoinIndexHelper() {
     }
 
-    static void loopFrom(SortedSetDocValues fromDV, Map<Integer, List<Integer>> toDocsByFromOrd, IntBinaryOperator sink) throws IOException {
+    static void loopFrom(SortedSetDocValues fromDV, Map<Integer, List<Integer>> toDocsByFromOrd, IntBinOp sink)
+            throws IOException {
         int fromDoc;
         while ((fromDoc = fromDV.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
             long vals = fromDV.docValueCount();
@@ -68,47 +69,26 @@ public class JoinIndexHelper {
     static int[] innerJoinTerms(SortedSetDocValues fromDV, SortedSetDocValues toDV) throws IOException {
         int[] fromOrdByToOrd = new int[(int) toDV.getValueCount()];
         Arrays.fill(fromOrdByToOrd, DocIdSetIterator.NO_MORE_DOCS);
-        BytesRef fromTerm = null;
-        BytesRef toTerm = null;
-        // TODO move to termEnum
-        for (long fromOrd = 0, toOrd = 0;
-             fromOrd < fromDV.getValueCount() && toOrd < toDV.getValueCount(); ) {
-            if (fromOrd == 0 && toOrd == 0) {//boostrap
-                fromTerm = fromDV.lookupOrd(fromOrd);
-                toTerm = toDV.lookupOrd(toOrd);
-            }
-            int cmp = fromTerm.compareTo(toTerm);
 
+        TermsEnum fromTerms = fromDV.termsEnum();
+        TermsEnum toTerms = toDV.termsEnum();
+
+        BytesRef fromTerm = fromTerms.next();
+        BytesRef toTerm = toTerms.next();
+
+        while (fromTerm != null && toTerm != null) {
+            int cmp = fromTerm.compareTo(toTerm);
             if (cmp < 0) {
-                fromOrd++;
-                if (fromOrd < fromDV.getValueCount()) {
-                    fromTerm = fromDV.lookupOrd(fromOrd);
-                    continue;
-                } else {
-                    break;
-                }
+                fromTerm = fromTerms.next();
             } else if (cmp > 0) {
-                toOrd++;
-                if (toOrd < toDV.getValueCount()) {
-                    toTerm = toDV.lookupOrd(toOrd);
-                    continue;
-                } else {
-                    break;
-                }
+                toTerm = toTerms.next();
             } else {
-                fromOrdByToOrd[(int) toOrd] = (int) fromOrd;
-                fromOrd++;
-                if (fromOrd < fromDV.getValueCount()) {
-                    fromTerm = fromDV.lookupOrd(fromOrd);
-                } else {
-                    break;
-                }
-                toOrd++;
-                if (toOrd < toDV.getValueCount()) {
-                    toTerm = toDV.lookupOrd(toOrd);
-                } else {
-                    break;
-                }
+                // Terms match: record mapping from toDV ordinal to fromDV ordinal
+                int toOrd = (int) toTerms.ord();
+                int fromOrd = (int) fromTerms.ord();
+                fromOrdByToOrd[toOrd] = fromOrd;
+                fromTerm = fromTerms.next();
+                toTerm = toTerms.next();
             }
         }
         return fromOrdByToOrd;
@@ -125,18 +105,17 @@ public class JoinIndexHelper {
     //TO-DO reuse from and to sides of join ops <- it doesn't seem ever possible, there's nothing to cache really
     static void indexJoinSegments(SearcherManager indexManager, Supplier<IndexWriter> writerFactory, SortedSetDocValues fromDV, SortedSetDocValues toDV,
                                   String indexFieldName,
-                                  IntBinaryOperator alongSideJoin) throws IOException {
+                                  IntBinOp alongSideJoin) throws IOException {
 
         int[] fromOrdByToOrd = innerJoinTerms(fromDV, toDV);
 
         Map<Integer, List<Integer>> toDocsByFromOrd = hashDV(fromOrdByToOrd, toDV);
 
         Document pointIdxDoc = new Document();
-        IntBinaryOperator indexFromToTuple = (f, t) -> {
+        IntBinOp indexFromToTuple = (f, t) -> {
             pointIdxDoc.add(
                     new IntPoint(indexFieldName, f, t));
             alongSideJoin.applyAsInt(f, t);
-            return 0;//TODO void
         };
         loopFrom(fromDV, toDocsByFromOrd, indexFromToTuple);
         IndexWriter indexWriter = writerFactory.get();
@@ -149,6 +128,18 @@ public class JoinIndexHelper {
         indexWriter.close();
         indexManager.maybeRefreshBlocking();
         Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
+    }
+
+    @FunctionalInterface
+    public interface IntBinOp {
+
+        /**
+         * Applies this operator to the given operands.
+         *
+         * @param left  the first operand
+         * @param right the second operand
+         */
+        void applyAsInt(int left, int right);
     }
     /**
      * used across to segments, potentially might be reused acroos repoeating from queries
