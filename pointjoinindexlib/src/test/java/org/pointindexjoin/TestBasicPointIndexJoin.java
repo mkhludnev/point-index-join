@@ -34,7 +34,9 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BytesRef;
 
-//@Seed("21F8512433676D96")
+// import com.carrotsearch.randomizedtesting.annotations.Seed;
+//
+// @Seed("C676A3387C0BA52E")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
 
@@ -102,7 +104,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         joinIndexQuery.close();
     }
 
-    //@Seed("8A024C31ECBBEBB8")
+    // @Seed("6D8CBE2DA3D72300")
     public void testBasic() throws Exception {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();
@@ -146,7 +148,6 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         fromw.commit();
 
         w.close();
-        fromw.close();
 
         IndexSearcher toSearcher = new IndexSearcher(DirectoryReader.open(dir));
         IndexSearcher fromSearcher = new IndexSearcher(DirectoryReader.open(fromDir));
@@ -170,19 +171,33 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         //assertJoin(Arrays.asList("635_39"), childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
         for (int pass = 0; pass < 10; pass++) {
             List<String> childIds = new ArrayList<>(childToParentMap.keySet());
-            if (orphanId!=null) {
-                childIds.add(orphanId);
+            if (orphan > 0) {
+                childIds.add("orphan_" + (random().nextInt(orphan)));
             }
             Collections.shuffle(childIds, random());
             List<String> selectedChildIds = childIds.subList(0, 10);
             assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier,toSearcher);
-            LOGGER.info("passed " + pass);
+            LOGGER.info("passed " + pass + " bare search");
+            ///
+            Collections.shuffle(childIds, random());
+            String childToRemove = selectedChildIds.getFirst();
+
+            fromSearcher.getIndexReader().close();
+            fromw.deleteDocuments(new Term("id", childToRemove));
+            fromw.commit();
+            fromSearcher = new IndexSearcher(DirectoryReader.open(fromDir));
+            childToParentMap.remove(childToRemove);
+            LOGGER.info("remove child " + childToRemove);
+            assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
+            LOGGER.info("passed " + pass + "child remove");
         }
 
         indexManager.close();
         toSearcher.getIndexReader().close();
         fromSearcher.getIndexReader().close();
         dir.close();
+
+        fromw.close();
         fromDir.close();
         indexManager.close();
         joinindexdir.close();

@@ -17,6 +17,7 @@ import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
+import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
 
 public class JoinIndexQuery extends Query implements  AutoCloseable{
@@ -106,10 +107,21 @@ public class JoinIndexQuery extends Query implements  AutoCloseable{
             Scorer fromScorer = fromQueryWeight.scorer(fromLeaf);
             if (fromScorer != null) {
                 DocIdSetIterator iterator = fromScorer.iterator();
-                if (iterator.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+                int doc;
+                if ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                     FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());
-                    // TODO may it be already cached in anywhere?
-                    iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
+                    Bits liveDocs;
+                    if ((liveDocs = fromLeaf.reader().getLiveDocs()) != null) {
+                        for (; doc < fromLeaf.reader().maxDoc(); doc = iterator.nextDoc()) {
+                            //while ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                            if (liveDocs.get(doc)) {
+                                fromBits.set(doc);
+                            }
+                        }
+                    } else {
+                        // TODO may it be already cached in anywhere?
+                        iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
+                    }
                     fromContextCaches.add(new JoinIndexHelper.FromContextCache(fromLeaf, fromBits));
                 }
             }
