@@ -36,7 +36,7 @@ import org.apache.lucene.util.BytesRef;
 
 // import com.carrotsearch.randomizedtesting.annotations.Seed;
 //
-// @Seed("C676A3387C0BA52E")
+// @Seed("30CB661418D2B6E5")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
 
@@ -104,7 +104,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         joinIndexQuery.close();
     }
 
-    // @Seed("6D8CBE2DA3D72300")
+    // @Seed("9B317B01C70E30CB")
     public void testBasic() throws Exception {
         Directory dir = newDirectory();
         Directory fromDir = newDirectory();

@@ -112,11 +112,16 @@ public class JoinIndexQuery extends Query implements  AutoCloseable{
                     FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());
                     Bits liveDocs;
                     if ((liveDocs = fromLeaf.reader().getLiveDocs()) != null) {
+                        boolean hasHits = false;
                         for (; doc < fromLeaf.reader().maxDoc(); doc = iterator.nextDoc()) {
                             //while ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                             if (liveDocs.get(doc)) {
                                 fromBits.set(doc);
+                                hasHits = true;
                             }
+                        }
+                        if (!hasHits) {
+                            continue;
                         }
                     } else {
                         // TODO may it be already cached in anywhere?
