@@ -45,6 +45,7 @@ public class JoinIndexHelper {
     }
 
     /**
+     * TODO use parallel arrays
      * @return toDocs[fromOrd][]
      */
     static Map<Integer, List<Integer>> hashDV(int[] fromOrdByToOrd, SortedSetDocValues toDV) throws IOException {
@@ -64,6 +65,9 @@ public class JoinIndexHelper {
     }
 
     /**
+     * Ideas:
+     *  - hash join
+     *  - drive by smaller side, perhaps return reversed mapping if it's smaller
      * @return fromOrdByToOrd[ToOrd]
      */
     static int[] innerJoinTerms(SortedSetDocValues fromDV, SortedSetDocValues toDV) throws IOException {
@@ -142,7 +146,8 @@ public class JoinIndexHelper {
         void applyAsInt(int left, int right);
     }
     /**
-     * used across to segments, potentially might be reused acroos repoeating from queries
+     * used across to segments, potentially might be reused acroos repeating "from" queries
+     * So far they are has only live bits. It migth not work if there's an undelete op, which i'm nit aware of.
      * */
     static class FromContextCache {
         final LeafReaderContext lrc;

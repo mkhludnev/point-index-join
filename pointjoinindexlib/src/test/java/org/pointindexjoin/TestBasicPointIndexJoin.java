@@ -147,7 +147,6 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         w.commit();
         fromw.commit();
 
-        w.close();
 
         IndexSearcher toSearcher = new IndexSearcher(DirectoryReader.open(dir));
         IndexSearcher fromSearcher = new IndexSearcher(DirectoryReader.open(fromDir));
@@ -178,23 +177,45 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             List<String> selectedChildIds = childIds.subList(0, 10);
             assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier,toSearcher);
             LOGGER.info("passed " + pass + " bare search");
-            ///
-            Collections.shuffle(childIds, random());
-            String childToRemove = selectedChildIds.getFirst();
+            {
+                Collections.shuffle(childIds, random());
+                String childToRemove = selectedChildIds.getFirst();
 
-            fromSearcher.getIndexReader().close();
-            fromw.deleteDocuments(new Term("id", childToRemove));
-            fromw.commit();
-            fromSearcher = new IndexSearcher(DirectoryReader.open(fromDir));
-            childToParentMap.remove(childToRemove);
-            LOGGER.info("remove child " + childToRemove);
-            assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
-            LOGGER.info("passed " + pass + "child remove");
+                fromSearcher.getIndexReader().close();
+                fromw.deleteDocuments(new Term("id", childToRemove));
+                fromw.commit();
+                fromSearcher = new IndexSearcher(DirectoryReader.open(fromDir));
+                childToParentMap.remove(childToRemove);
+                LOGGER.info("remove child " + childToRemove);
+                assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
+                LOGGER.info("passed " + pass + "child remove");
+            }
+            {
+                List<String> parentsExpected =
+                        selectedChildIds.stream().map(childToParentMap::get).filter(p -> p != null).collect(Collectors.toList());
+                Collections.shuffle(parentsExpected, random());
+                String removeParent = parentsExpected.getFirst();
+                for (Iterator<Map.Entry<String, String>> entries = childToParentMap.entrySet().iterator(); entries.hasNext(); ) {
+                    Map.Entry parentByChild = entries.next();
+                    if (parentByChild.getValue() != null && parentByChild.getValue().equals(removeParent)) {
+                        entries.remove();
+                    }
+                }
+                toSearcher.getIndexReader().close();
+                w.deleteDocuments(new Term("id", removeParent));
+                w.commit();
+                toSearcher = new IndexSearcher(DirectoryReader.open(dir));
+                LOGGER.info("removed parent " + removeParent);
+                assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
+                LOGGER.info("passed " + pass + "parent remove");
+            }
         }
 
         indexManager.close();
         toSearcher.getIndexReader().close();
         fromSearcher.getIndexReader().close();
+        w.close();
+
         dir.close();
 
         fromw.close();
