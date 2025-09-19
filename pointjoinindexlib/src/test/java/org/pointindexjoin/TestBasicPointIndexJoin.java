@@ -46,7 +46,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         Document parent1 = new Document();
         parent1.add(new SortedSetDocValuesField("id", new BytesRef(id)));
         parent1.add(new StringField("id", id, Field.Store.YES));
-        w.addDocument(parent1);
+        w.updateDocument(new Term("id", id), parent1);
     }
 
     private static void indexChild(IndexWriter fromw, String fk, String id) throws IOException {
@@ -55,7 +55,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
             child1.add(new SortedSetDocValuesField("fk", new BytesRef(fk)));
         }
         child1.add(new StringField("id", id, Field.Store.YES));
-        fromw.addDocument(child1);
+        fromw.updateDocument(new Term("id", id), child1);
     }
 
     private static void assertJoin(List<String> selectedChildIds, Map<String, String> childToParentMap,
@@ -133,7 +133,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                 String childId = parentIdStr + "_" + childNum; // Unique child ID
                 indexChild(fromw, parentIdStr, childId);
                 childToParentMap.put(childId, parentIdStr);
-                if (rarely()) {
+                if (rarely() && rarely()) {
                     indexChild(fromw, null, orphanId=("orphan_"+(orphan++)));
                     childToParentMap.put(orphanId, null);
                 }
@@ -168,7 +168,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         //TopDocs parentResult = toSearcher.search(SortedSetDocValuesField.newSlowExactQuery("id", new BytesRef("639")), 10);
         //System.out.println(parentResult);
         //assertJoin(Arrays.asList("635_39"), childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
-        for (int pass = 0; pass < 10; pass++) {
+        for (int pass = 0; pass < 1000; pass++) {
             List<String> childIds = new ArrayList<>(childToParentMap.keySet());
             if (orphan > 0) {
                 childIds.add("orphan_" + (random().nextInt(orphan)));
@@ -208,6 +208,20 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
                 LOGGER.info("removed parent " + removeParent);
                 assertJoin(selectedChildIds, childToParentMap, fromSearcher, indexManager, indexWriterSupplier, toSearcher);
                 LOGGER.info("passed " + pass + "parent remove");
+            }
+            {
+                int parentId = random().nextInt(1000 - 100, 1000 + 100);
+                String parentIdStr = String.valueOf(parentId);
+                indexParent(parentIdStr, w);
+                //if (rarely()) {
+                w.commit();
+                //}
+                String childId = parentIdStr + "_" + random().nextInt(100);
+                indexChild(fromw, parentIdStr, childId);
+                childToParentMap.put(childId, parentIdStr);
+                //if (rarely()) {
+                fromw.commit();
+                //}
             }
         }
 
