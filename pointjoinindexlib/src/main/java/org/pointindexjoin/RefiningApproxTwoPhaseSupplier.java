@@ -14,7 +14,7 @@ import org.apache.lucene.util.NumericUtils;
 
 class RefiningApproxTwoPhaseSupplier extends ScorerSupplier {
     private final List<SingleToSegProcessor.FromSegIndexData> existingJoinIndices;
-    static final int eagerFetch = Long.BYTES * 8;
+    static final int eagerFetch = Long.BYTES * 64;
     private final int approxHits;
     final protected FixedBitSet toApprox;
     //private final LeafReaderContext toContext;

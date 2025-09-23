@@ -11,6 +11,8 @@ repositories {
     mavenCentral()
 }
 
+group = "org.pointindexjoin"
+version = "0.1"
 
 dependencies {
     // Lucene Core
@@ -19,6 +21,7 @@ dependencies {
 
     // Test framework
     testImplementation("org.apache.lucene:lucene-test-framework:10.2.0")
+    testImplementation("org.apache.lucene:lucene-join:10.2.0")
 }
 
 java {
