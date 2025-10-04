@@ -1,10 +1,18 @@
 package org.pointindexjoin;
 
+import static org.pointindexjoin.MultiRangeQuery.createTree;
+import static org.pointindexjoin.MultiRangeQuery.getRange;
+
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
+import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.ConstantScoreQuery;
@@ -17,8 +25,10 @@ import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Weight;
+import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
+import org.apache.lucene.util.PriorityQueue;
 
 public class JoinIndexQuery extends Query implements  AutoCloseable{
     final IndexSearcher fromSearcher;
@@ -96,6 +106,51 @@ public class JoinIndexQuery extends Query implements  AutoCloseable{
         return 0;
     }
 
+    static final class FromTo implements Comparable<FromTo> {
+        private int from;
+        private int to;
+
+        FromTo(int from, int to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        @Override
+            public int compareTo(FromTo o) {
+                return (to - from) - (o.to - o.from);
+            }
+
+        public int from() {
+            return from;
+        }
+
+        public int to() {
+            return to;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (obj == this) return true;
+            if (obj == null || obj.getClass() != this.getClass()) return false;
+            var that = (FromTo) obj;
+            return this.from == that.from &&
+                    this.to == that.to;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(from, to);
+        }
+
+        @Override
+        public String toString() {
+            return "FromTo[" +
+                    "from=" + from + ", " +
+                    "to=" + to + ']';
+        }
+
+        }
+
     // TODO non-null elems collection
     List<JoinIndexHelper.FromContextCache> cacheFromQuery() throws IOException {
         Weight fromQueryWeight = fromSearcher.createWeight(fromQuery, ScoreMode.COMPLETE_NO_SCORES, 1f);
@@ -110,24 +165,72 @@ public class JoinIndexQuery extends Query implements  AutoCloseable{
                 int doc;
                 if ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                     FixedBitSet fromBits = new FixedBitSet(fromLeaf.reader().maxDoc());
-                    Bits liveDocs;
-                    if ((liveDocs = fromLeaf.reader().getLiveDocs()) != null) {
-                        boolean hasHits = false;
-                        for (; doc < fromLeaf.reader().maxDoc(); doc = iterator.nextDoc()) {
-                            //while ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
-                            if (liveDocs.get(doc)) {
-                                fromBits.set(doc);
-                                hasHits = true;
+                    PriorityQueue<FromTo> gapsDesc = new PriorityQueue<>(
+                            31-Integer.numberOfLeadingZeros(fromLeaf.reader().maxDoc()),
+                            ()->new FromTo(-1,-1)) {
+                        @Override
+                        protected boolean lessThan(FromTo a, FromTo b) {
+                            return a.compareTo(b)<0;
+                        }
+                    };
+                    FromTo leastGap = gapsDesc.top();
+                    Bits liveDocs = fromLeaf.reader().getLiveDocs();
+                    boolean hasHits = false;
+                    int minDoc = DocIdSetIterator.NO_MORE_DOCS, maxDoc = -1, prevDoc=-1;
+                    for (; doc < fromLeaf.reader().maxDoc(); doc = iterator.nextDoc()) {
+                        //while ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                        if (liveDocs==null || liveDocs.get(doc)) {
+                            fromBits.set(doc);
+                            minDoc = minDoc == DocIdSetIterator.NO_MORE_DOCS ? doc : minDoc;
+                            maxDoc = Math.max(maxDoc, doc);
+                            hasHits = true;
+                            if (prevDoc>=0) {
+                                if(doc-prevDoc>1) {
+                                    if((doc - prevDoc) > (leastGap.to - leastGap.from)) {
+                                        leastGap.from = prevDoc;
+                                        leastGap.to = doc;
+                                    }
+                                    leastGap = gapsDesc.updateTop();
+                                }
                             }
+                            prevDoc = doc;
                         }
-                        if (!hasHits) {
-                            continue;
-                        }
-                    } else {
-                        // TODO may it be already cached in anywhere?
-                        iterator.intoBitSet(fromLeaf.reader().maxDoc(), fromBits, 0);
                     }
-                    fromContextCaches.add(new JoinIndexHelper.FromContextCache(fromLeaf, fromBits));
+                    if (!hasHits) {
+                        continue;
+                    }
+                    List<FromTo> gapsIncFrom = new ArrayList<>(gapsDesc.size());
+                    for(FromTo gap:gapsDesc){
+                        if(gap.from>=0) {
+                            gapsIncFrom.add(gap);
+                        }
+                    }
+                    Collections.sort(gapsIncFrom, Comparator.comparingInt(a -> a.from));
+
+                    List<MultiRangeQuery.RangeClause> rangeClauses = new ArrayList<>(gapsIncFrom.size()+1);
+
+                    List<FromTo> ranges = new ArrayList<>(gapsIncFrom.size());
+                    int lastFrom = minDoc;
+                    for (Iterator<FromTo> gaps = gapsIncFrom.iterator();gaps.hasNext();){
+                        FromTo gap = gaps.next();
+                        ranges.add(new FromTo(lastFrom, gap.from));
+                        rangeClauses.add(new MultiRangeQuery.RangeClause(IntPoint.pack(lastFrom).bytes,
+                                IntPoint.pack(gap.from).bytes));
+                        lastFrom = gap.to;
+                    }
+                    ranges.add(new FromTo(lastFrom,maxDoc));
+                    rangeClauses.add(new MultiRangeQuery.RangeClause(IntPoint.pack(lastFrom).bytes,
+                            IntPoint.pack(maxDoc).bytes));
+
+                    MultiRangeQuery.Relatable range;
+                    final ArrayUtil.ByteArrayComparator comparator = ArrayUtil.getUnsignedComparator(Integer.BYTES);
+                    if (rangeClauses.size() == 1) {
+                        range = getRange(rangeClauses.get(0), 1, Integer.BYTES, comparator);
+                    } else {
+                        range = createTree(rangeClauses, 1, Integer.BYTES, comparator);
+                    }
+
+                    fromContextCaches.add(new JoinIndexHelper.FromContextCache(fromLeaf, fromBits , range));
                 }
             }
         }

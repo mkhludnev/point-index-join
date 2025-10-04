@@ -4,11 +4,14 @@ import java.io.IOException;
 import java.util.List;
 
 import org.apache.lucene.index.PointValues;
+import org.apache.lucene.search.BulkScorer;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.TwoPhaseIterator;
 import org.apache.lucene.util.BitSetIterator;
+import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.NumericUtils;
 
@@ -101,7 +104,7 @@ class RefiningApproxTwoPhaseSupplier extends ScorerSupplier {
             }
 
             @Override
-            public DocIdSetIterator iterator() {
+            public DocIdSetIterator iterator() { //TODO eagerly get bitset for top level bulk scorer
                 return TwoPhaseIterator.asDocIdSetIterator(twoPhaseIterator());
             }
 
@@ -122,6 +125,22 @@ class RefiningApproxTwoPhaseSupplier extends ScorerSupplier {
         return approxHits;
     }
 
+/*    @Override
+    public BulkScorer bulkScorer() throws IOException {
+        return new BulkScorer() {
+
+            @Override
+            public int score(LeafCollector collector, Bits acceptDocs, int min, int max) throws IOException {
+                return 0;
+            }
+
+            @Override
+            public long cost() {
+                return 0;
+            }
+        };
+    }*/
+
     static class RefineToApproxVisitor implements PointValues.IntersectVisitor {
         private final FixedBitSet destination;
         private int startingDocId;
@@ -139,6 +158,7 @@ class RefiningApproxTwoPhaseSupplier extends ScorerSupplier {
         public void visit(int docID) throws IOException {
             throw new UnsupportedOperationException();
         }
+
 
         @Override
         public void visit(int docID, byte[] packedValue) throws IOException {
@@ -162,14 +182,18 @@ class RefiningApproxTwoPhaseSupplier extends ScorerSupplier {
             int lowerToIdx = NumericUtils.sortableBytesToInt(minPackedValue, Integer.BYTES);
             int upperToIdx = NumericUtils.sortableBytesToInt(maxPackedValue, Integer.BYTES);
 
-            if (fromCtxLeaf.upperDocId < lowerFromIdx || upperFromIdx < fromCtxLeaf.lowerDocId ||
+            if (//fromCtxLeaf.upperDocId < lowerFromIdx || upperFromIdx < fromCtxLeaf.lowerDocId ||
                     startingDocId + eagerFetch <= lowerToIdx // it's excluding
-                    || upperToIdx < startingDocId) {
+                            || upperToIdx < startingDocId) {
                 return PointValues.Relation.CELL_OUTSIDE_QUERY;
-            } /*else if (lowerFromQ >= lowerFromIdx && upperFromIdx <= upperFromQdocNum) {
-        return PointValues.Relation.CELL_CROSSES_QUERY;//CELL_INSIDE_QUERY;  - otherwise it misses the pointstheLastUpperToIdx
+            }
 
-    }*/
+            PointValues.Relation fromRelation = fromCtxLeaf.approxFrom.relate(minPackedValue, maxPackedValue);
+            if (fromRelation == PointValues.Relation.CELL_OUTSIDE_QUERY) {
+               //fails assert fromCtxLeaf.upperDocId < lowerFromIdx || upperFromIdx < fromCtxLeaf.lowerDocId; // TODO
+                return PointValues.Relation.CELL_OUTSIDE_QUERY;
+            }
+
             //theLastUpperToIdx = upperToIdx;
             return PointValues.Relation.CELL_CROSSES_QUERY;
         }

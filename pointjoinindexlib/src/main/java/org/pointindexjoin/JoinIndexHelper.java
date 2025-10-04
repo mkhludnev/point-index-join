@@ -13,11 +13,13 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.SearcherManager;
+import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 
@@ -134,6 +136,38 @@ public class JoinIndexHelper {
         Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
+    static void intersectPointsLazy(PointValues indexPoints, LazyVisitor visitor)
+            throws IOException {
+        final PointValues.PointTree pointTree = indexPoints.getPointTree();
+        while (true) {
+            PointValues.Relation compare =
+                    visitor.compare(pointTree.getMinPackedValue(), pointTree.getMaxPackedValue());
+            if (compare == PointValues.Relation.CELL_INSIDE_QUERY) {
+                // This cell is fully inside the query shape: recursively add all points in this cell
+                // without filtering
+                pointTree.visitDocIDs(visitor);
+            } else if (compare == PointValues.Relation.CELL_CROSSES_QUERY) {
+                // The cell crosses the shape boundary, or the cell fully contains the query, so we fall
+                // through and do full filtering:
+                if (pointTree.moveToChild()) {
+                    continue;
+                }
+                // TODO: we can assert that the first value here in fact matches what the pointTree
+                // claimed?
+                // Leaf node; scan and filter all points in this block:
+                if (visitor.needsVisitDocValues()) { // TODO custom code
+                    pointTree.visitDocValues(visitor);
+                }
+            }
+            while (!pointTree.moveToSibling()) {
+                if (!pointTree.moveToParent()) {
+                    return;
+                }
+            }
+        }
+        //assert pointTree.moveToParent() == false;
+    }
+
     @FunctionalInterface
     public interface IntBinOp {
 
@@ -145,6 +179,15 @@ public class JoinIndexHelper {
          */
         void applyAsInt(int left, int right);
     }
+
+    interface LazyVisitor extends PointValues.IntersectVisitor {
+        default void intersectPointsLazy(PointValues indexPoints) throws IOException {
+            JoinIndexHelper.intersectPointsLazy(indexPoints, this);
+        }
+
+        boolean needsVisitDocValues();
+    }
+
     /**
      * used across to segments, potentially might be reused acroos repeating "from" queries
      * So far they are has only live bits. It migth not work if there's an undelete op, which i'm nit aware of.
@@ -154,14 +197,30 @@ public class JoinIndexHelper {
         final int lowerDocId;
         final int upperDocId;
         final FixedBitSet bits;
+        final MultiRangeQuery.Relatable approxFrom;
 
 
-        public FromContextCache(LeafReaderContext fromLeaf, FixedBitSet fromBits) {
+        public FromContextCache(LeafReaderContext fromLeaf, FixedBitSet fromBits, MultiRangeQuery.Relatable approx) {
             this.lrc = fromLeaf;
             this.bits = fromBits;
             this.lowerDocId = fromBits.nextSetBit(0);
             this.upperDocId = fromBits.prevSetBit(fromBits.length() - 1);
             assert this.lowerDocId <= this.upperDocId;
+            this.approxFrom = approx;
+            //assert TODOcomply(fromBits, approx);
+        }
+
+        private boolean TODOcomply(FixedBitSet fromBits, MultiRangeQuery.Relatable approx) {
+            BitSetIterator it = new BitSetIterator(fromBits, 0);
+            boolean allSet = true;
+            int doc;
+            while ((doc = it.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                if (!approx.matches(IntPoint.pack(doc).bytes)) {
+                    allSet = false;
+                    break;
+                }
+            }
+            return allSet;
         }
     }
 }

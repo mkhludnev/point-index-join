@@ -37,8 +37,8 @@ record SingleToSegProcessor(String fromField, String toField, SearcherManager in
         EagerJoiner exactlyMatchingSink =
                 writeJoinIndices(writerFactory, () -> new EagerJoiner(new FixedBitSet(toContext.reader().maxDoc())));
 
-        DefaultJoinIndexReader approxSink =
-                readJoinIndices(() -> new DefaultJoinIndexReader(new FixedBitSet(toContext.reader().maxDoc())));
+        AproximatingJoinIndexReader approxSink =
+                readJoinIndices(() -> new AproximatingJoinIndexReader(new FixedBitSet(toContext.reader().maxDoc())));
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
         boolean hasExactHits = exactlyMatchingSink != null && exactlyMatchingSink.getAsInt() > 0;
         if (approxSink != null && approxSink.getAsInt() > 0) {

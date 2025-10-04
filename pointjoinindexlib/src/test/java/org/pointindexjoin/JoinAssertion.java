@@ -115,7 +115,7 @@ public class JoinAssertion implements LongSupplier {
             builder.add(baseQuery, BooleanClause.Occur.MUST);
             builder.add(new TermQuery(new Term("id", removedParent)), BooleanClause.Occur.MUST_NOT);
             builder.add(new TermInSetQuery("id", parentsExpected.stream().map(BytesRef::new).toList()),
-                    BooleanClause.Occur.FILTER);
+                    BooleanClause.Occur.FILTER); //TODO add any parent just for coverage
             baseQuery = builder.build();
         }
         return baseQuery;
