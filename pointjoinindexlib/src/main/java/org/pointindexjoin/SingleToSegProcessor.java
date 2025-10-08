@@ -10,6 +10,7 @@ import java.util.function.Supplier;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
+import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.util.FixedBitSet;
@@ -94,9 +95,9 @@ record SingleToSegProcessor(String fromField, String toField, SearcherManager in
     interface JoinOpFactory extends Function<JoinIndexHelper.FromContextCache, JoinIndexHelper.IntBinOp> {
     }
 
-    private static class EagerJoiner implements JoinOpFactory,
+    static class EagerJoiner implements JoinOpFactory,
             IntSupplier {
-        private final FixedBitSet toBits;
+        final FixedBitSet toBits;
         private int hits = 0;
 
         public EagerJoiner(FixedBitSet toBits) {

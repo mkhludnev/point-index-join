@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.LeafReaderContext;
@@ -19,13 +20,13 @@ import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.ScorerSupplier;
 import org.apache.lucene.search.Weight;
 
-class JoinIndexWeight extends Weight {
+class JoinIndexWeight2 extends Weight {
 
-    private final JoinIndexQuery joinIndexQuery;
+    private final JoinIndexQuery2 joinIndexQuery;
     private final List<JoinIndexHelper.FromContextCache> fromLeaves;
     private final Consumer<AutoCloseable> closeHook;
 
-    public JoinIndexWeight(JoinIndexQuery joinIndexQuery, ScoreMode scoreMode, Consumer<AutoCloseable> consumer)
+    public JoinIndexWeight2(JoinIndexQuery2 joinIndexQuery, ScoreMode scoreMode, Consumer<AutoCloseable> consumer)
             throws IOException {
         super(joinIndexQuery);
         this.joinIndexQuery = joinIndexQuery;
@@ -44,33 +45,33 @@ class JoinIndexWeight extends Weight {
         if (fromLeaves.isEmpty()) {
             return null;
         }
-        SingleToSegProcessor processor = this.extractIndices(
+        SingleToSegDVProcessor processor = this.extractIndices(
                 toContext);
         return processor.createScorerSupplier(joinIndexQuery.writerFactory);
     }
 
-    SingleToSegProcessor extractIndices(LeafReaderContext toSegment) throws IOException {
+    SingleToSegDVProcessor extractIndices(LeafReaderContext toSegment) throws IOException {
 
-        Map<String, SingleToSegProcessor.FromSegIndexData> needsToBeIndexed = new LinkedHashMap<>(fromLeaves.size());
+        Map<String, SingleToSegDVProcessor.FromSegDocValuesData> needsToBeIndexed = new LinkedHashMap<>(fromLeaves.size());
         String toSegmentName = getSegmentName(toSegment);
         //List<SingleToSegProcessor.FromSegIndexData> fromSegData = new ArrayList<>(fromSegments.size());
         for (JoinIndexHelper.FromContextCache fromLeaf : fromLeaves) {
             String fromSegmentName = getSegmentName(fromLeaf.lrc);
             String pointIndexName = getPointIndexFieldName(fromSegmentName, toSegmentName);
-            SingleToSegProcessor.FromSegIndexData fromSegIndexData = new SingleToSegProcessor.FromSegIndexData(pointIndexName,
+            SingleToSegDVProcessor.FromSegDocValuesData fromSegIndexData = new SingleToSegDVProcessor.FromSegDocValuesData(pointIndexName,
                     fromLeaf);
             needsToBeIndexed.put(pointIndexName, fromSegIndexData);
         }
 
-        List<SingleToSegProcessor.FromSegIndexData> existingIndices = new ArrayList<>(fromLeaves.size());
+        List<SingleToSegDVProcessor.FromSegDocValuesData> existingIndices = new ArrayList<>(fromLeaves.size());
         IndexSearcher searcher = joinIndexQuery.indexManager.acquire();
         for (LeafReaderContext pointSegment : searcher.getIndexReader().leaves()) {
             FieldInfos fieldInfos = pointSegment.reader().getFieldInfos();
             for (FieldInfo fieldInfo : fieldInfos) {
-                SingleToSegProcessor.FromSegIndexData fromSegIndexData = needsToBeIndexed.remove(fieldInfo.name);
+                SingleToSegDVProcessor.FromSegDocValuesData fromSegIndexData = needsToBeIndexed.remove(fieldInfo.name);
                 if (fromSegIndexData != null) {
-                    if (fieldInfo.getPointIndexDimensionCount() == 2) {
-                        fromSegIndexData.joinValues = pointSegment.reader().getPointValues(fieldInfo.name);
+                    if (isSuitableFieldType(fieldInfo)) {
+                        fromSegIndexData.toDocsByFrom = pointSegment.reader().getSortedNumericDocValues(fieldInfo.name);
                         existingIndices.add(fromSegIndexData);
                     }// else tombstone, we don't care. this from query doesn't hit that seg.
                 }
@@ -82,9 +83,9 @@ class JoinIndexWeight extends Weight {
             joinIndexQuery.indexManager.release(searcher);
         }
 
-        SingleToSegProcessor processor;// = new SingleToSegProcessor[toSize];
+        SingleToSegDVProcessor processor;// = new SingleToSegProcessor[toSize];
         processor//[toOrd]
-                = new SingleToSegProcessor(
+                = new SingleToSegDVProcessor(
                 joinIndexQuery.fromField, joinIndexQuery.toField, joinIndexQuery.indexManager, toSegment,
 //s.get(toOrd),
                 existingIndices//.get(0)
@@ -92,6 +93,11 @@ class JoinIndexWeight extends Weight {
         );
         return processor;
     }
+
+    private static boolean isSuitableFieldType(FieldInfo fieldInfo) {
+        return fieldInfo.getDocValuesType() == DocValuesType.SORTED_NUMERIC;
+    }
+
     @Override
     public boolean isCacheable(LeafReaderContext ctx) {
         return false;

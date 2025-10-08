@@ -11,6 +11,9 @@ import java.util.logging.Logger;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.SortedNumericDocValuesField;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PointValues;
@@ -134,6 +137,63 @@ public class JoinIndexHelper {
         indexWriter.close();
         indexManager.maybeRefreshBlocking();
         Logger.getLogger(JoinIndexQuery.class.getName()).info(() -> "written:" + indexFieldName);
+    }
+
+    //TO-DO reuse from and to sides of join ops <- it doesn't seem ever possible, there's nothing to cache really
+    static void indexDVJoinSegments(SearcherManager indexManager, Supplier<IndexWriter> writerFactory, SortedSetDocValues fromDV
+            , SortedSetDocValues toDV,
+                                  String indexFieldName,
+                                  IntBinOp alongSideJoin) throws IOException {
+
+        int[] fromOrdByToOrd = innerJoinTerms(fromDV, toDV);
+
+        Map<Integer, List<Integer>> toDocsByFromOrd = hashDV(fromOrdByToOrd, toDV);
+        final int currDocNum[]=new int[]{0};
+
+        final IndexWriter writer[]=new IndexWriter[]{null};
+
+        IntBinOp indexFromToTuple = (f, t) -> {
+                alongSideJoin.applyAsInt(f, t);
+        };
+        //loopFrom(fromDV, toDocsByFromOrd, indexFromToTuple);
+        int fromDoc,docid=0;
+        IndexWriter indexWriter = null;
+        while ((fromDoc = fromDV.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+            Document doc = new Document();
+            long vals = fromDV.docValueCount();
+            for (int v = 0; v < vals; v++) {
+                int fromOrd = (int) fromDV.nextOrd();
+                List<Integer> toDocs = toDocsByFromOrd.get(fromOrd);
+                if (toDocs != null) {
+                    for (Integer toDoc : toDocs) {
+                        doc.add(new SortedNumericDocValuesField(indexFieldName, toDoc));
+                        indexFromToTuple.applyAsInt(fromDoc, toDoc);
+                    }
+                }
+            }
+            if (doc.iterator().hasNext()) {
+                for (;docid<fromDoc;) {
+                    Document stub = new Document();
+                    stub.add(new NumericDocValuesField("docid", docid++));//TODO redundant control field for assertion
+                    indexWriter = indexWriter ==null ? writerFactory.get():indexWriter;
+                    indexWriter.addDocument(stub);
+                }
+                doc.add(new NumericDocValuesField("docid", docid++));
+                indexWriter = indexWriter == null ? writerFactory.get() : indexWriter;
+                indexWriter.addDocument(doc);
+            }
+        }
+
+        if (indexWriter==null) {
+             // empty tombstone
+            Document tombstone = new Document();
+            tombstone.add(new SortedDocValuesField(indexFieldName, new BytesRef("placeholder")));
+            indexWriter = indexWriter == null ? writerFactory.get() : indexWriter;
+            indexWriter.addDocument(tombstone);
+        }
+        indexWriter.close();
+        indexManager.maybeRefreshBlocking();
+        Logger.getLogger(JoinIndexQuery2.class.getName()).info(() -> "written:" + indexFieldName);
     }
 
     static void intersectPointsLazy(PointValues indexPoints, LazyVisitor visitor)

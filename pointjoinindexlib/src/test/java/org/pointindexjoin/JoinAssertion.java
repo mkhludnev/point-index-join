@@ -1,5 +1,6 @@
 package org.pointindexjoin;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -35,11 +36,11 @@ public class JoinAssertion implements LongSupplier {
     protected final List<String> selectedChildIds;
     protected final IndexSearcher fromSearcher;
     private final Map<String, String> childToParentMap;
-    private final SearcherManager indexManager;
-    private final Supplier<IndexWriter> indexWriterSupplier;
+    final SearcherManager indexManager;
+    final Supplier<IndexWriter> indexWriterSupplier;
     private final IndexSearcher toSearcher;
     private final Random random;
-    private JoinIndexQuery joinIndexQuery;
+    Query joinIndexQuery;
 
     // Internal state
     private Set<String> parentsExpected;
@@ -79,7 +80,7 @@ public class JoinAssertion implements LongSupplier {
         validateSearchResults(search);
         verifyAllParentsFound(search);
         if (joinIndexQuery != null) {
-            joinIndexQuery.close();
+            ((Closeable)joinIndexQuery).close();
         }
         return this;
     }
