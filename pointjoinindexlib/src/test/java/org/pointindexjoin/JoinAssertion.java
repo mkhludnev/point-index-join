@@ -80,7 +80,7 @@ public class JoinAssertion implements LongSupplier {
         validateSearchResults(search);
         verifyAllParentsFound(search);
         if (joinIndexQuery != null) {
-            ((Closeable)joinIndexQuery).close();
+            ((AutoCloseable)joinIndexQuery).close();
         }
         return this;
     }

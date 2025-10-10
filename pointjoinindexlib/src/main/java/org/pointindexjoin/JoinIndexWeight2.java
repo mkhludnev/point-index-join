@@ -9,11 +9,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.ScoreMode;
@@ -65,6 +68,9 @@ class JoinIndexWeight2 extends Weight {
 
         List<SingleToSegDVProcessor.FromSegDocValuesData> existingIndices = new ArrayList<>(fromLeaves.size());
         IndexSearcher searcher = joinIndexQuery.indexManager.acquire();
+        Logger.getLogger(getClass().getCanonicalName()).info(""+searcher.getIndexReader().getContext().leaves().stream().map(l-> dump(
+                l)).collect(
+                Collectors.joining("; ")));
         for (LeafReaderContext pointSegment : searcher.getIndexReader().leaves()) {
             FieldInfos fieldInfos = pointSegment.reader().getFieldInfos();
             for (FieldInfo fieldInfo : fieldInfos) {
@@ -72,6 +78,7 @@ class JoinIndexWeight2 extends Weight {
                 if (fromSegIndexData != null) {
                     if (isSuitableFieldType(fieldInfo)) {
                         fromSegIndexData.toDocsByFrom = pointSegment.reader().getSortedNumericDocValues(fieldInfo.name);
+                        fromSegIndexData.maxToDocIndexed = pointSegment.reader().maxDoc();
                         existingIndices.add(fromSegIndexData);
                     }// else tombstone, we don't care. this from query doesn't hit that seg.
                 }
@@ -92,6 +99,14 @@ class JoinIndexWeight2 extends Weight {
                 , needsToBeIndexed.values()//absentPointsByTo//.get(0)
         );
         return processor;
+    }
+
+    private static String dump(LeafReaderContext l) {
+        StringBuilder append = new StringBuilder().append(((SegmentReader) l.reader()).getSegmentName())
+                .append(":")
+                .append(((SegmentReader) l.reader()).maxDoc()).append("[");
+        l.reader().getFieldInfos().forEach(fi -> append.append(fi.getName()).append(","));
+        return append.append("]").toString();
     }
 
     private static boolean isSuitableFieldType(FieldInfo fieldInfo) {

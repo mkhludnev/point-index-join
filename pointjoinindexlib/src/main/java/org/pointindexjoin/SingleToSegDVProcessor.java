@@ -3,9 +3,9 @@ package org.pointindexjoin;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
-import java.util.function.Function;
-import java.util.function.IntSupplier;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.logging.Logger;
 
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReaderContext;
@@ -23,9 +23,12 @@ record SingleToSegDVProcessor(String fromField, String toField, SearcherManager 
                               List<FromSegDocValuesData> existingJoinIndices,
                               Collection<FromSegDocValuesData> absentJoinIndices) //implements AutoCloseable
 {
+    public static final Logger LOGGER = Logger.getLogger(SingleToSegDVProcessor.class.getCanonicalName());
+
     static class FromSegDocValuesData {
         final String indexValuesName;
         final JoinIndexHelper.FromContextCache fromCxt;
+        int maxToDocIndexed;
         SortedNumericDocValues toDocsByFrom;
 
         public FromSegDocValuesData(String pointIndexName, JoinIndexHelper.FromContextCache fromLeaf) {
@@ -39,14 +42,19 @@ record SingleToSegDVProcessor(String fromField, String toField, SearcherManager 
                 writeJoinIndices(writerFactory, () -> new SingleToSegProcessor.EagerJoiner(new FixedBitSet(toContext.reader().maxDoc())));
         boolean hasExactHits = exactlyMatchingSink != null && exactlyMatchingSink.getAsInt() > 0;
         //AproximatingJoinIndexReader approxSink =
+        if(hasExactHits) {
+            dumpBits(exactlyMatchingSink.toBits);
+        }
         DVJoinIndexReader dvJoinIndexReader = readJoinIndices(
                 () -> new DVJoinIndexReader(hasExactHits ? exactlyMatchingSink.toBits :
                         new FixedBitSet(toContext.reader().maxDoc())));
         //assert debugBro==null || FixedBitSet.andNotCount(debugBro.toBits, toApprox)==0;
 
         if (dvJoinIndexReader == null) {
-            return null;
+            dumpBits(exactlyMatchingSink.toBits);
+            return hasExactHits ? new BitSetScorerSupplier(exactlyMatchingSink.toBits,exactlyMatchingSink.getAsInt()) : null;
         } else {
+            dumpBits(dvJoinIndexReader.toDocs);
             return new BitSetScorerSupplier(dvJoinIndexReader.toDocs, dvJoinIndexReader.toDocs.cardinality());
         }
         // if (approxSink != null && approxSink.getAsInt() > 0) {
@@ -65,6 +73,19 @@ record SingleToSegDVProcessor(String fromField, String toField, SearcherManager 
         //         return null;
         //     }
         // }
+    }
+
+    private void dumpBits(FixedBitSet toBits) throws IOException {
+        BitSetIterator iter = new BitSetIterator(toBits,1000);
+        StringBuilder sb = new StringBuilder();
+        for (int doc = iter.nextDoc();doc<DocIdSetIterator.NO_MORE_DOCS;doc = iter.nextDoc()) {
+            if (sb.length()>0) {
+                sb.append(", ");
+            }
+            sb.append(
+            toContext.reader().storedFields().document(doc, Set.of("id")).get("id"));
+        }
+        LOGGER.info(sb.toString());
     }
 
     private <R extends SingleToSegProcessor.JoinOpFactory> R writeJoinIndices(Supplier<IndexWriter> writerFactory, Supplier<R> sinkFactory)
@@ -91,7 +112,8 @@ record SingleToSegDVProcessor(String fromField, String toField, SearcherManager 
         if (!existingJoinIndices.isEmpty()) {
             R sink = sinkFactory.get();
             for (FromSegDocValuesData task : existingJoinIndices) {
-                sink.readJoinIndex(task.fromCxt, task.toDocsByFrom);
+                sink.readJoinIndex(task.fromCxt, task.toDocsByFrom, task.maxToDocIndexed);
+                LOGGER.info("read "+task.indexValuesName);
             }
             return sink;
         } else {
@@ -101,7 +123,8 @@ record SingleToSegDVProcessor(String fromField, String toField, SearcherManager 
 
 
     interface JoinIndexReader {
-        void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache, SortedNumericDocValues pointValues) throws IOException;
+        void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache, SortedNumericDocValues pointValues,
+                           int maxToDocIndexed) throws IOException;
     }
 
     private class DVJoinIndexReader implements JoinIndexReader {
@@ -114,10 +137,10 @@ record SingleToSegDVProcessor(String fromField, String toField, SearcherManager 
 
         @Override
         public void readJoinIndex(JoinIndexHelper.FromContextCache fromContextCache,
-                                  SortedNumericDocValues pointValues) throws IOException {
+                                  SortedNumericDocValues pointValues, int maxToDocIndexed) throws IOException {
             DocIdSetIterator fromBits = new BitSetIterator(fromContextCache.bits, 1000);
             for(int fromDoc=fromBits.nextDoc(); fromDoc!=DocIdSetIterator.NO_MORE_DOCS; fromDoc=fromBits.nextDoc()){
-                if(pointValues.advanceExact(fromDoc)) {
+                if(fromDoc<maxToDocIndexed && pointValues.advanceExact(fromDoc)) {
                     int numValues = pointValues.docValueCount();
                     for (int i = 0; i < numValues; i++) {
                         int toDoc = (int) pointValues.nextValue();

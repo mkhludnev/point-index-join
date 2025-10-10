@@ -18,6 +18,8 @@ import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.NoMergeScheduler;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
@@ -28,9 +30,11 @@ import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BytesRef;
 import org.junit.BeforeClass;
 
+import com.carrotsearch.randomizedtesting.annotations.Seed;
+
 // import com.carrotsearch.randomizedtesting.annotations.Seed;
 //
-// @Seed("30CB661418D2B6E5")
+@Seed("54B8ED5AE2FC5E8F")
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "nope")
 public class TestBasicPointIndexJoin extends LuceneTestCase {
 
@@ -293,7 +297,7 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
         indexManager.close();
         joinindexdir.close();
     }
-
+@Seed("DDC3FA5930304A59")
     public void testDVBasic() throws Exception {
         Directory joinindexdir = newDirectory();
         IndexWriter idxW = new IndexWriter(joinindexdir, new IndexWriterConfig());
@@ -301,7 +305,14 @@ public class TestBasicPointIndexJoin extends LuceneTestCase {
 
         Supplier<IndexWriter> indexWriterSupplier = () -> {
             try {
-                return new IndexWriter(joinindexdir, newIndexWriterConfig());
+                IndexWriterConfig conf = new IndexWriterConfig();
+                conf.setMaxBufferedDocs(Integer.MAX_VALUE);
+                conf.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
+                conf.setRAMPerThreadHardLimitMB(2048-1);
+                conf.setMergePolicy(NoMergePolicy.INSTANCE);
+                conf.setMergeScheduler(NoMergeScheduler.INSTANCE);
+                //conf.setInfoStream(System.out);
+                return new IndexWriter(joinindexdir, conf);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }

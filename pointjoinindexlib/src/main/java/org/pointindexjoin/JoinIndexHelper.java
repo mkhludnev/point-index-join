@@ -148,9 +148,6 @@ public class JoinIndexHelper {
         int[] fromOrdByToOrd = innerJoinTerms(fromDV, toDV);
 
         Map<Integer, List<Integer>> toDocsByFromOrd = hashDV(fromOrdByToOrd, toDV);
-        final int currDocNum[]=new int[]{0};
-
-        final IndexWriter writer[]=new IndexWriter[]{null};
 
         IntBinOp indexFromToTuple = (f, t) -> {
                 alongSideJoin.applyAsInt(f, t);
@@ -171,17 +168,17 @@ public class JoinIndexHelper {
                     }
                 }
             }
-            if (doc.iterator().hasNext()) {
-                for (;docid<fromDoc;) {
-                    Document stub = new Document();
-                    stub.add(new NumericDocValuesField("docid", docid++));//TODO redundant control field for assertion
-                    indexWriter = indexWriter ==null ? writerFactory.get():indexWriter;
-                    indexWriter.addDocument(stub);
-                }
-                doc.add(new NumericDocValuesField("docid", docid++));
-                indexWriter = indexWriter == null ? writerFactory.get() : indexWriter;
-                indexWriter.addDocument(doc);
+            //if (doc.iterator().hasNext()) {
+            for (;docid<fromDoc;) { //TODO note. we don't write such stub placeholders to the end of the index!
+                Document stub = new Document();
+                stub.add(new NumericDocValuesField("docid", docid++));//TODO redundant control field for assertion
+                indexWriter = indexWriter ==null ? writerFactory.get():indexWriter;
+                indexWriter.addDocument(stub);
             }
+            doc.add(new NumericDocValuesField("docid", docid++));
+            indexWriter = indexWriter == null ? writerFactory.get() : indexWriter;
+            indexWriter.addDocument(doc);
+            //}
         }
 
         if (indexWriter==null) {
@@ -191,6 +188,7 @@ public class JoinIndexHelper {
             indexWriter = indexWriter == null ? writerFactory.get() : indexWriter;
             indexWriter.addDocument(tombstone);
         }
+        indexWriter.commit();
         indexWriter.close();
         indexManager.maybeRefreshBlocking();
         Logger.getLogger(JoinIndexQuery2.class.getName()).info(() -> "written:" + indexFieldName);
